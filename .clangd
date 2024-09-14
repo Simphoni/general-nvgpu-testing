@@ -1,3 +1,13 @@
 CompileFlags:
   Add:
+    - --cuda-path=/home/spack/spack/opt/spack/linux-ubuntu22.04-broadwell/gcc-12.1.0/cuda-12.1.1-k7wgk32miw5juul4rg6evzsklv33whxo
     - -I/home/spack/spack/opt/spack/linux-ubuntu22.04-broadwell/gcc-12.1.0/cuda-12.1.1-k7wgk32miw5juul4rg6evzsklv33whxo/include
+    - -I/home/xjz/venv/nightly/lib/python3.10/site-packages/torch/include
+    - -I/home/xjz/venv/nightly/lib/python3.10/site-packages/torch/include/torch/csrc/api/include
+    - -I/usr/include/python3.10
+    - -xcuda
+    - --cuda-gpu-arch=sm_80
+  Remove:
+    - -forward-unknown-to-host-compiler
+    - --generate-code=arch=compute_80,code=[compute_80,sm_80]
+  Compiler: clang++

@@ -1,7 +1,7 @@
 import torch
 import time
 
-# from .scripts.gemm_bound import GPU_SPEC_LIST
+# from gemm_bound import GPU_SPEC_LIST
 
 print(torch.__version__)
 
@@ -12,10 +12,13 @@ STR_DTYPE_MAPPING = {
     "fp32": torch.float32,
     "tf32": torch.float32,
     "fp16": torch.float16,
+    "bf16": torch.bfloat16,
     "int8": torch.int8,
     # "int4": torch.int4,
 }
 
+
+import acre
 
 def test_gemm(n: int, k: int, m: int, dtype: str):
     dtype = STR_DTYPE_MAPPING[dtype]
@@ -36,7 +39,13 @@ def test_gemm(n: int, k: int, m: int, dtype: str):
     torch.cuda.synchronize()
     toc = time.time()
     latency = (toc - tic) / NUM_RUNS
-    print(f"{latency * 1e3} ms")
+    print(f"PyTorch GEMM: {latency * 1e3} ms")
+    d = torch.zeros_like(c)
+    acre.cublas_gemmex_nt(a, b, d)
+    # print((c - d).abs())
+    torch.testing.assert_close(c, d, rtol=1e-3, atol=1e-3)
+    acre.cublas_gemm_nt(a, b, d)
+    torch.testing.assert_close(c, d, rtol=1e-3, atol=1e-3)
     return latency
 
 
