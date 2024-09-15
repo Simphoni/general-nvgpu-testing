@@ -1,3 +1,5 @@
 build/
 .mypy_cache/
 *.so
+*.sqlite
+*.nsys-rep*

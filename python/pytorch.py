@@ -6,7 +6,7 @@ import time
 print(torch.__version__)
 
 
-NUM_RUNS = 32
+NUM_RUNS = 64
 
 STR_DTYPE_MAPPING = {
     "fp32": torch.float32,
@@ -19,6 +19,7 @@ STR_DTYPE_MAPPING = {
 
 
 import acre
+
 
 def test_gemm(n: int, k: int, m: int, dtype: str):
     dtype = STR_DTYPE_MAPPING[dtype]
@@ -40,9 +41,9 @@ def test_gemm(n: int, k: int, m: int, dtype: str):
     toc = time.time()
     latency = (toc - tic) / NUM_RUNS
     print(f"PyTorch GEMM: {latency * 1e3} ms")
+
     d = torch.zeros_like(c)
     acre.cublas_gemmex_nt(a, b, d)
-    # print((c - d).abs())
     torch.testing.assert_close(c, d, rtol=1e-3, atol=1e-3)
     acre.cublas_gemm_nt(a, b, d)
     torch.testing.assert_close(c, d, rtol=1e-3, atol=1e-3)
@@ -50,7 +51,7 @@ def test_gemm(n: int, k: int, m: int, dtype: str):
 
 
 def main():
-    test_gemm(4096, 4096, 4096, "fp16")
+    test_gemm(64, 4096, 11008, "fp16")
 
 
 if __name__ == "__main__":

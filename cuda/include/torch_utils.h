@@ -24,11 +24,12 @@ inline void __checkTensor(at::Tensor a, const std::string &name) {
   checkTensorContiguous(a, name);
 }
 
-#define checkIntEqual(a, b) __checkIntEqual((int64_t)a, (int64_t)b, __LINE__)
+#define checkIntEqual(a, b)                                                    \
+  __checkIntEqual((int64_t)a, (int64_t)b, __FILE__, __LINE__)
 
-inline void __checkIntEqual(int64_t a, int64_t b, int line) {
+inline void __checkIntEqual(int64_t a, int64_t b, const char *file, int line) {
   if (a != b) {
-    fprintf(stderr, "%s:%d [ERROR] checkEqual failed (%ld != %ld)\n", __FILE__,
+    fprintf(stderr, "%s:%d [ERROR] checkEqual failed (%ld != %ld)\n", file,
             line, a, b);
     throw;
   }
