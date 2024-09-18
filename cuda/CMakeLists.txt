@@ -1,5 +1,4 @@
 cmake_minimum_required(VERSION 3.22)
-project(CublasBaseline LANGUAGES CXX CUDA)
 set(DEFAULT_BUILD_TYPE "RelWithDebInfo")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -58,16 +57,15 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-message(STATUS "Building ${EXE_NAME}")
-add_library(acre SHARED interface.cc)
+add_library(acre SHARED interface.cc cublas.cc cutlass.cu)
 set_target_properties(acre PROPERTIES PREFIX "" SUFFIX ${Python3_EXTENSION_SUFFIX})
 target_include_directories(acre PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(acre PRIVATE ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/include)
 target_compile_definitions(acre PRIVATE INTERFACE_NAME=acre)
 target_link_libraries(acre ${TORCH_LIBRARIES} pybind11::module)
 
-set_target_properties(acre PROPERTIES INSTALL_RPATH "$ORIGIN")
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-# current source is in ./cuda
-set(arce_install_dir "${CMAKE_CURRENT_SOURCE_DIR}/../python")
+set_target_properties(acre PROPERTIES INSTALL_RPATH "\$ORIGIN;${CMAKE_CURRENT_BINARY_DIR}")
+
+set(arce_install_dir "${CMAKE_SOURCE_DIR}/python")
 
 install(TARGETS acre LIBRARY DESTINATION ${arce_install_dir} COMPONENT torch_extension)
