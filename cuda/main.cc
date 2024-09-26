@@ -1,5 +1,3 @@
-#include <cstdio>
-
 #include <pybind11/pybind11.h>
 
 #include "cuda_utils.h"
@@ -14,6 +12,8 @@ void _cublas_gemmex_nt_compf32(at::Tensor a, at::Tensor b, at::Tensor c);
 
 void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c);
 
+void _cutlass_gemm_nt_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c);
+
 // the exported functions should be named with a leading underscore
 PYBIND11_MODULE(INTERFACE_NAME, m) {
   log_cublas_version();
@@ -22,4 +22,6 @@ PYBIND11_MODULE(INTERFACE_NAME, m) {
   m.def("cublas_gemmex_nt", &_cublas_gemmex_nt_compf32, "cublas_gemmex_nt");
   m.def("cutlass_gemm_nt_naive", &_cutlass_gemm_nt_naive,
         "cutlass_gemm_nt_naive");
+  m.def("cutlass_gemm_nt_manual_tune", &_cutlass_gemm_nt_manual_tune,
+        "cutlass_gemm_nt_manual_tune");
 }

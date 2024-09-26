@@ -9,5 +9,14 @@ CompileFlags:
     - --cuda-gpu-arch=sm_80
   Remove:
     - -forward-unknown-to-host-compiler
+    - -gencode
+    - --options-file
+    - --expt-relaxed-constexpr
+    - --expt-extended-lambda
+    - -Xcudafe
+    - -Xcompiler=-fPIC
+    - -rdc=true
+    - --ptxas-options=-v
+    - --diag_suppress=cc_clobber_ignored,--diag_suppress=field_without_dll_interface,--diag_suppress=base_class_has_different_dll_interface,--diag_suppress=dll_interface_conflict_none_assumed,--diag_suppress=dll_interface_conflict_dllexport_assumed,--diag_suppress=bad_friend_decl
     - --generate-code=arch=compute_80,code=[compute_80,sm_80]
   Compiler: clang++

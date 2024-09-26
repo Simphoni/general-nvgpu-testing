@@ -27,12 +27,10 @@ void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkIntEqual(a.size(1), b.size(1));
   checkIntEqual(m, c.size(0));
   checkIntEqual(n, c.size(1));
-  std::string name =
-      std::string("cutlass::gemm_nt_") + std::string(a.dtype().name()) + "_" +
-      std::string(b.dtype().name()) + "_" + std::string(c.dtype().name());
-  std::string dtype_str = "{comp=fp32," + std::string(a.dtype().name()) + "," +
-                          std::string(b.dtype().name()) + "," +
-                          std::string(c.dtype().name()) + "}";
+  std::string name = std::string("cutlass::gemm_nt_{comp=fp32,") +
+                     std::string(a.dtype().name()) + "," +
+                     std::string(b.dtype().name()) + "," +
+                     std::string(c.dtype().name()) + "}";
 
   using Half = cutlass::half_t;
   using RowMajor = cutlass::layout::RowMajor;
@@ -60,7 +58,7 @@ void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
   if (tensorTypeIs<at::Half>(a) && tensorTypeIs<at::Half>(b) &&
       tensorTypeIs<at::Half>(c)) {
     double latency = test_pipeline([&]() { gemm_op(args); }, name);
-    fprintf(stderr, "\ttflops: %.4f\n", get_tflops(m, n, k, latency));
+    fprintf(stderr, "---> TFLOPS: %.4f\n", get_tflops(m, n, k, latency));
   } else {
     fprintf(stderr, "unsupported data type\n");
   }
