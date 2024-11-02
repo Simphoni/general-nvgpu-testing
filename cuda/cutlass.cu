@@ -4,17 +4,13 @@
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/gemm/device/gemm_universal.h"
 #include "cutlass/version.h"
+#include "pybind11/pybind11.h"
 
 #include "gemm_utils.h"
 #include "torch_utils.h"
 
 double test_pipeline(std::function<void()> func, const std::string &name,
-                     int repeat = 64);
-
-void log_cutlass_version() {
-  fprintf(stderr, "CUTLASS version: %d.%d.%d\n", cutlass::getVersionMajor(),
-          cutlass::getVersionMinor(), cutlass::getVersionPatch());
-}
+                     int repeat = -1);
 
 void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkTensor(a);
@@ -55,6 +51,12 @@ void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
                              {alpha, beta});
   gemmKernel gemm_op;
 
+  cutlass::Status status = gemm_op.can_implement(args);
+  if (status != cutlass::Status::kSuccess) {
+    fprintf(stderr, "%s: failed to initialize gemm op\n", name.c_str());
+    return;
+  }
+
   if (tensorTypeIs<at::Half>(a) && tensorTypeIs<at::Half>(b) &&
       tensorTypeIs<at::Half>(c)) {
     double latency = test_pipeline([&]() { gemm_op(args); }, name);
@@ -62,4 +64,8 @@ void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
   } else {
     fprintf(stderr, "unsupported data type\n");
   }
+}
+
+void register_cutlass(pybind11::module &mod_perf, pybind11::module &mod_run) {
+  mod_perf.def("cutlass_gemm_nt_naive", &_cutlass_gemm_nt_naive);
 }

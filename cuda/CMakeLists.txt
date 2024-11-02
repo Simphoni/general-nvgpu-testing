@@ -57,10 +57,11 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-add_library(acre SHARED main.cc cublas.cc cutlass.cu cutlass_manual_tune.cu)
+file(GLOB ACRE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cu ${CMAKE_CURRENT_SOURCE_DIR}/*.cc)
+add_library(acre SHARED ${ACRE_SOURCES})
 set_target_properties(acre PROPERTIES PREFIX "" SUFFIX ${Python3_EXTENSION_SUFFIX})
 target_include_directories(acre PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_include_directories(acre PUBLIC ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/include)
+target_include_directories(acre PUBLIC ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/include ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/tools/util/include)
 target_compile_definitions(acre PUBLIC INTERFACE_NAME=acre)
 target_link_libraries(acre ${TORCH_LIBRARIES} pybind11::module)
 

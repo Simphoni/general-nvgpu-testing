@@ -1,5 +1,6 @@
 #include <string>
-#include <torch/extension.h>
+
+#include "torch/extension.h"
 
 inline void checkTensorDevice(at::Tensor a, const std::string &name) {
   if (a.device().type() != c10::DeviceType::CUDA) {

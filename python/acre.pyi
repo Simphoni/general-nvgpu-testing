@@ -9,3 +9,7 @@ def cutlass_gemm_nt_naive(
 def cutlass_gemm_nt_manual_tune(
     a: torch.Tensor, b: torch.Tensor, c: torch.Tensor
 ) -> None: ...
+
+def cutlass_parallel_gemmcr_layernorm(
+    a: torch.Tensor, b: torch.Tensor, c: torch.Tensor
+) -> None: ...

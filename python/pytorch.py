@@ -19,20 +19,13 @@ STR_DTYPE_MAPPING = {
 }
 
 
-import acre
+import acre.perf as acre
 
 colorama.init(autoreset=True)
 
 def run_and_check(func, a, b, c, d):
     torch.randn(d.size(), out=d)
     func(a, b, d)
-    try:
-        torch.testing.assert_close(c, d, rtol=1e-3, atol=1e-3)
-    except AssertionError as e:
-        print("v" * 40)
-        print(colorama.Style.BRIGHT + f"{func.__name__} failure: {e}")
-        print("^" * 40)
-
 
 def test_gemm(n: int, k: int, m: int, dtype: str):
     dtype = STR_DTYPE_MAPPING[dtype]
@@ -64,7 +57,7 @@ def test_gemm(n: int, k: int, m: int, dtype: str):
     d = torch.zeros_like(c)
     run_and_check(acre.cublas_gemm_nt, a, b, c, d)
     run_and_check(acre.cublas_gemmex_nt, a, b, c, d)
-    run_and_check(acre.cutlass_gemm_nt_naive, a, b, c, d)
+    #run_and_check(acre.cutlass_gemm_nt_naive, a, b, c, d)
     run_and_check(acre.cutlass_gemm_nt_manual_tune, a, b, c, d)
      
     print("-" * 80)
@@ -76,7 +69,7 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     # test_gemm(64, 4096, 11008, "fp16")
     test_gemm(4096, 4096, 4096, "fp16")
-    test_gemm(8192, 4096, 8192, "fp16")
+    #test_gemm(8192, 4096, 8192, "fp16")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@
 #include "torch_utils.h"
 
 double test_pipeline(std::function<void()> func, const std::string &name,
-                     int repeat = 64);
+                     int repeat = -1);
 
 void _cutlass_gemm_nt_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkTensor(a);
@@ -70,3 +70,7 @@ void _cutlass_gemm_nt_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
     fprintf(stderr, "unsupported data type\n");
   }
 }
+
+void register_cutlass_manual(pybind11::module &mod_perf, pybind11::module &mod_run) {
+  mod_perf.def("cutlass_gemm_nt_manual_tune", &_cutlass_gemm_nt_manual_tune);
+} 

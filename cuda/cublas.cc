@@ -2,27 +2,19 @@
 #include <cstdio>
 #include <functional>
 
+#include "pybind11/pybind11.h"
+
 #include "cuda_utils.h"
+#include "gemm_utils.h"
 #include "torch_utils.h"
 
 namespace ch = std::chrono;
 
-void log_cublas_version() {
-  static bool is_logged = false;
-  if (is_logged) {
-    return;
-  }
-  is_logged = true;
-  // print cublas version info
-  int major = 0, minor = 0, patch = 0;
-  cublasSafeCall(cublasGetProperty(MAJOR_VERSION, &major));
-  cublasSafeCall(cublasGetProperty(MINOR_VERSION, &minor));
-  cublasSafeCall(cublasGetProperty(PATCH_LEVEL, &patch));
-  fprintf(stderr, "CUBLAS version: %d.%d.%d\n", major, minor, patch);
-}
-
 double test_pipeline(std::function<void()> func, const std::string &name,
-                     int repeat = 64) {
+                     int repeat = -1) {
+  if (repeat == -1) {
+    repeat = get_default_nrep();
+  }
   fprintf(stderr, "%s: test pipeline running\n", name.data());
   for (int i = 0; i < repeat; i++) {
     func();
@@ -137,4 +129,10 @@ void _cublas_gemmex_nt_compf32(at::Tensor a, at::Tensor b, at::Tensor c) {
       },
       name);
   cublasSafeCall(cublasDestroy(handle));
+}
+
+void register_cublas(pybind11::module &mod_perf, pybind11::module &mod_run) {
+  mod_perf.def("cublas_gemm_nt", &_cublas_gemm_nt, "cublas_gemm_nt");
+  mod_perf.def("cublas_gemmex_nt", &_cublas_gemmex_nt_compf32,
+               "cublas_gemmex_nt");
 }
