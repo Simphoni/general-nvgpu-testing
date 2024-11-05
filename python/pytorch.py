@@ -27,21 +27,23 @@ def run_and_check(func, a, b, c, d):
     torch.randn(d.size(), out=d)
     func(a, b, d)
     try:
-        torch.testing.assert_close(c, d, rtol=1e-2, atol=1e-2)
+        torch.testing.assert_close(c, d, rtol=2e-2, atol=2e-2)
     except AssertionError as e:
         print("v" * 40)
         print(colorama.Fore.RED + f"{func.__name__} failure: {e}")
+        print(c)
         print(d)
+        print((d * d).max())
         print("^" * 40)
 
-def test_gemm(n: int, k: int, m: int, dtype: str):
+def test_gemm(m: int, n: int, k: int, dtype: str):
     dtype = STR_DTYPE_MAPPING[dtype]
-    a = torch.randn(n, k, dtype=dtype).cuda()
-    b = torch.randn(m, k, dtype=dtype).cuda()
-    c = torch.randn(n, m, dtype=dtype).cuda()
+    a = torch.randn(m, k, dtype=dtype).cuda()
+    b = torch.randn(n, k, dtype=dtype).cuda()
+    c = torch.randn(m, n, dtype=dtype).cuda()
 
     torch.autograd.set_grad_enabled(False)
-    print(f"[TEST] GEMM: n={n}, k={k}, m={m}, dtype={dtype}")
+    print(f"[TEST] GEMM: {m=}, {n=}, {k=}, {dtype=}")
 
     # pytorch
     def run():

@@ -1,5 +1,5 @@
-#include "cute/arch/mma_sm80.hpp"
 #include "cute/tensor.hpp"
+#include "cute/tensor_impl.hpp"
 #include "pybind11/pybind11.h"
 
 #include "cuda_utils.h"
@@ -34,17 +34,20 @@ __global__ void __launch_bounds__(128)
                   make_layout(make_shape(gemmM, gemmK), LayoutRight{}));
   auto tensorC =
       make_tensor(make_gmem_ptr(gemmC_ptr),
-                  make_layout(make_shape(gemmN, gemmM), LayoutRight{}));
+                  make_layout(make_shape(gemmM, gemmN), LayoutRight{}));
   // CP_ASYNC only accept 16B, cutlass 3.5.1 assertion too loose
   using GemmCopyIntrin16B = SM80_CP_ASYNC_CACHEGLOBAL<uint128_t>;
-  // accumulate with FP32
-  // using MMAIntrin = SM80_16x8x16_F32F16F16F32_TN;
 
   auto copyA = make_tiled_copy(
       Copy_Atom<Copy_Traits<GemmCopyIntrin16B>, fp16>{},
       make_layout(Shape<Int<8 * kWarpNum>, _4>{}, LayoutRight{}),
       make_layout(Shape<_1, _8>{}, LayoutRight{}));
   auto copyB = copyA;
+
+  using tmp = decltype(copyA)::AtomLayoutSrc;
+  using tmp2 = decltype(copyA)::AtomLayoutDst;
+  using tmp3 = decltype(copyA)::AtomLayoutRef;
+  using tmp4 = decltype(copyA)::TiledLayout_TV;
 
   // tX for tensorX
   Tensor tAGmem = local_tile(tensorA, gemmTiler, ctaCoord, Step<_1, X, _1>{});
@@ -69,18 +72,19 @@ __global__ void __launch_bounds__(128)
   Tensor tASmem = make_tensor(make_smem_ptr(sA), layoutASmem);
   Tensor tBSmem = make_tensor(make_smem_ptr(sB), layoutBSmem);
 
-  ThrCopy thrCopyA = copyA.get_slice(thridx);
-  ThrCopy thrCopyB = copyB.get_slice(thridx);
-
   // cA for [copy]TiledTensorA
-  Tensor cAGmem =
-      thrCopyA.partition_S(tAGmem); // (COPY,COPY_M,COPY_K,k_tile_count)
+  // (COPY,COPY_M,COPY_K,k_tile_count)
+  ThrCopy thrCopyA = copyA.get_slice(thridx);
+  // auto tmp = copyA.tidfrg_S(tASmem.layout());
+  Tensor cAGmem = thrCopyA.partition_S(tAGmem);
   Tensor cASmem = thrCopyA.partition_D(tASmem);
+  ThrCopy thrCopyB = copyB.get_slice(thridx);
   Tensor cBGmem = thrCopyB.partition_S(tBGmem);
   Tensor cBSmem = thrCopyB.partition_D(tBSmem);
 
-  auto blockMMA = make_tiled_mma(SM80_16x8x16_F32F16F16F32_TN{},
-                                 Layout<Shape<_16, _16, _1>>{});
+  auto blockMMA = make_tiled_mma(
+      MMA_Atom<MMA_Traits<SM80_16x8x16_F32F16F16F32_TN>>{},
+      make_layout(Shape<_2, _2>{}, LayoutRight{}), Tile<_128, _128, _16>{});
   ThrMMA thrMMA = blockMMA.get_slice(thridx);
   // mA for [mma]TiledTensorA
   Tensor mASmem = thrMMA.partition_A(tASmem); // (MMA,MMA_M,MMA_K,PIPE)
@@ -98,7 +102,7 @@ __global__ void __launch_bounds__(128)
   int kMaxBlock = size<2>(mASmem);
   int loadIdx = 0;
   for (int pipeIdx = 0; pipeIdx < kTileCount + kMaxPipe - 1; pipeIdx++) {
-    if (0 < pipeIdx && pipeIdx < kTileCount) {
+    if (pipeIdx < kTileCount) {
       copy(copyA, cAGmem(_, _, _, pipeIdx), cASmem(_, _, _, loadIdx));
       copy(copyB, cBGmem(_, _, _, pipeIdx), cBSmem(_, _, _, loadIdx));
     }
@@ -110,14 +114,18 @@ __global__ void __launch_bounds__(128)
       for (int blockIdx = 0; blockIdx < kMaxBlock; blockIdx++) {
         copy(mASmem(_, _, blockIdx, mmaIdx), mAReg(_, _, blockIdx));
         copy(mBSmem(_, _, blockIdx, mmaIdx), mBReg(_, _, blockIdx));
-        gemm(blockMMA, mAReg(_, _, mmaIdx), mBReg(_, _, mmaIdx), mCReg);
+        gemm(blockMMA, mAReg(_, _, blockIdx), mBReg(_, _, blockIdx), mCReg);
       }
     }
     loadIdx += 1;
     loadIdx = loadIdx == kMaxPipe ? 0 : loadIdx;
   }
-  take<0, 1>(shape(mCReg));
-  copy(mCReg, mCGmem);
+  Tensor mCRegFp16 = make_fragment_like<fp16>(mCReg.layout());
+  CUTE_UNROLL
+  for (int i = 0; i < size(mCReg); ++i) {
+    mCRegFp16[i] = __float2half(mCReg[i]);
+  }
+  copy(mCRegFp16, mCGmem);
 }
 
 } // namespace parallel_kernels
@@ -144,7 +152,7 @@ void _cutlass_parallel_gemmrc_layernorm(torch::Tensor gemmA,
   int blockX = gemmM / 128;
   int blockY = gemmN / 128;
   dim3 gridDim(blockX, blockY);
-  dim3 blockDim(32, 4);
+  dim3 blockDim(128, 1, 1);
   fp16 *gemmA_ptr = reinterpret_cast<fp16 *>(gemmA.data_ptr());
   fp16 *gemmB_ptr = reinterpret_cast<fp16 *>(gemmB.data_ptr());
   fp16 *gemmC_ptr = reinterpret_cast<fp16 *>(gemmC.data_ptr());
