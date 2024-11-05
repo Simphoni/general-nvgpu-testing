@@ -1,21 +1,23 @@
+#include "cute/arch/mma_sm80.hpp"
 #include "cute/tensor.hpp"
 #include "pybind11/pybind11.h"
 
+#include "cuda_utils.h"
 #include "gemm_utils.h"
 #include "torch_utils.h"
 
+using fp16 = cute::half_t;
+
+namespace parallel_kernels {
+
 using namespace cute;
-using namespace cutlass;
-
-namespace {
-
-using fp16 = cutlass::half_t;
 
 constexpr int kWarpNum = 4;
 
-__global__ void cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
-                                      fp16 *gemmC_ptr, // fp16 *lnA, fp16 *lnB,
-                                      int gemmM, int gemmN, int gemmK) {
+__global__ void __launch_bounds__(128)
+    cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
+                          fp16 *gemmC_ptr, // fp16 *lnA, fp16 *lnB,
+                          int gemmM, int gemmN, int gemmK) {
   using gemmTileM = _128;
   using gemmTileN = _128;
   using gemmTileK = _32;
@@ -24,22 +26,25 @@ __global__ void cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
   auto ctaCoord = make_coord(blockIdx.x, blockIdx.y, _);
   auto gemmTiler = Shape<gemmTileM, gemmTileN, gemmTileK>{};
 
-  auto tensorA = make_tensor(make_gmem_ptr(gemmA_ptr),
-                             make_layout(make_shape(gemmK, gemmM)));
-  auto tensorB = make_tensor(make_gmem_ptr(gemmB_ptr),
-                             make_layout(make_shape(gemmK, gemmN)));
-  auto tensorC = make_tensor(make_gmem_ptr(gemmC_ptr),
-                             make_layout(make_shape(gemmN, gemmM)));
-  using GemmCopyIntrin4B = SM80_CP_ASYNC_CACHEGLOBAL<uint32_t>;
+  auto tensorA =
+      make_tensor(make_gmem_ptr(gemmA_ptr),
+                  make_layout(make_shape(gemmM, gemmK), LayoutRight{}));
+  auto tensorB =
+      make_tensor(make_gmem_ptr(gemmB_ptr),
+                  make_layout(make_shape(gemmM, gemmK), LayoutRight{}));
+  auto tensorC =
+      make_tensor(make_gmem_ptr(gemmC_ptr),
+                  make_layout(make_shape(gemmN, gemmM), LayoutRight{}));
+  // CP_ASYNC only accept 16B, cutlass 3.5.1 assertion too loose
+  using GemmCopyIntrin16B = SM80_CP_ASYNC_CACHEGLOBAL<uint128_t>;
   // accumulate with FP32
   // using MMAIntrin = SM80_16x8x16_F32F16F16F32_TN;
 
-  auto copyA = make_tiled_copy(Copy_Atom<Copy_Traits<GemmCopyIntrin4B>, fp16>{},
-                               Layout<Shape<_16, Int<2 * kWarpNum>>>{},
-                               Layout<Shape<_2, _2>>{});
-  auto copyB = make_tiled_copy(Copy_Atom<Copy_Traits<GemmCopyIntrin4B>, fp16>{},
-                               Layout<Shape<_16, Int<2 * kWarpNum>>>{},
-                               Layout<Shape<_2, _2>>{});
+  auto copyA = make_tiled_copy(
+      Copy_Atom<Copy_Traits<GemmCopyIntrin16B>, fp16>{},
+      make_layout(Shape<Int<8 * kWarpNum>, _4>{}, LayoutRight{}),
+      make_layout(Shape<_1, _8>{}, LayoutRight{}));
+  auto copyB = copyA;
 
   // tX for tensorX
   Tensor tAGmem = local_tile(tensorA, gemmTiler, ctaCoord, Step<_1, X, _1>{});
@@ -47,8 +52,18 @@ __global__ void cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
   Tensor tBGmem = local_tile(tensorB, gemmTiler, ctaCoord, Step<X, _1, _1>{});
   Tensor tCGmem = local_tile(tensorC, gemmTiler, ctaCoord, Step<_1, _1, X>{});
 
-  auto layoutASmem = make_layout(Shape<gemmTileK, gemmTileM, gemmPipe>{});
-  auto layoutBSmem = make_layout(Shape<gemmTileK, gemmTileN, gemmPipe>{});
+  // auto sA_atom =
+  //     make_layout(make_shape(gemmTileM{}, gemmTileK{}), LayoutRight{});
+  // auto sAshape =
+  //     tile_to_shape(sA_atom, make_shape(gemmTileM{}, gemmTileK{},
+  //     gemmPipe{}));
+
+  auto layoutASmem =
+      make_layout(Shape<gemmTileM, gemmTileK, gemmPipe>{},
+                  make_stride(gemmTileK{}, _1{}, gemmTileM{} * gemmTileK{}));
+  auto layoutBSmem =
+      make_layout(Shape<gemmTileN, gemmTileK, gemmPipe>{},
+                  make_stride(gemmTileK{}, _1{}, gemmTileN{} * gemmTileK{}));
   __shared__ fp16 sA[cosize_v<decltype(layoutASmem)>];
   __shared__ fp16 sB[cosize_v<decltype(layoutBSmem)>];
   Tensor tASmem = make_tensor(make_smem_ptr(sA), layoutASmem);
@@ -65,7 +80,7 @@ __global__ void cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
   Tensor cBSmem = thrCopyB.partition_D(tBSmem);
 
   auto blockMMA = make_tiled_mma(SM80_16x8x16_F32F16F16F32_TN{},
-                                 Layout<Shape<_16, _8, _1>>{});
+                                 Layout<Shape<_16, _16, _1>>{});
   ThrMMA thrMMA = blockMMA.get_slice(thridx);
   // mA for [mma]TiledTensorA
   Tensor mASmem = thrMMA.partition_A(tASmem); // (MMA,MMA_M,MMA_K,PIPE)
@@ -105,7 +120,10 @@ __global__ void cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
   copy(mCReg, mCGmem);
 }
 
-} // namespace
+} // namespace parallel_kernels
+
+double test_pipeline(std::function<void()> func, const std::string &name,
+                     int repeat = -1);
 
 // parallel operator
 // output:
@@ -127,11 +145,17 @@ void _cutlass_parallel_gemmrc_layernorm(torch::Tensor gemmA,
   int blockY = gemmN / 128;
   dim3 gridDim(blockX, blockY);
   dim3 blockDim(32, 4);
-  fp16 *gemmA_ptr = gemmA.data_ptr<fp16>();
-  fp16 *gemmB_ptr = gemmB.data_ptr<fp16>();
-  fp16 *gemmC_ptr = gemmC.data_ptr<fp16>();
-  cute_parallel_gemm_ln<<<gridDim, blockDim>>>(gemmA_ptr, gemmB_ptr, gemmC_ptr,
-                                               gemmM, gemmN, gemmK);
+  fp16 *gemmA_ptr = reinterpret_cast<fp16 *>(gemmA.data_ptr());
+  fp16 *gemmB_ptr = reinterpret_cast<fp16 *>(gemmB.data_ptr());
+  fp16 *gemmC_ptr = reinterpret_cast<fp16 *>(gemmC.data_ptr());
+  parallel_kernels::cute_parallel_gemm_ln<<<gridDim, blockDim>>>(
+      gemmA_ptr, gemmB_ptr, gemmC_ptr, gemmM, gemmN, gemmK);
+  test_pipeline(
+      [&]() {
+        parallel_kernels::cute_parallel_gemm_ln<<<gridDim, blockDim>>>(
+            gemmA_ptr, gemmB_ptr, gemmC_ptr, gemmM, gemmN, gemmK);
+      },
+      "cutlass_parallel_gemmrc_layernorm");
 }
 
 void register_cutlass_parallel(pybind11::module &m) {
