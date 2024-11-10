@@ -15,7 +15,7 @@ double test_pipeline(std::function<void()> func, const std::string &name,
   if (repeat == -1) {
     repeat = get_default_nrep();
   }
-  fprintf(stderr, "%s: test pipeline running\n", name.data());
+  fprintf(stderr, "%s: test pipeline running: nrep=%d\n", name.data(), repeat);
   for (int i = 0; i < repeat; i++) {
     func();
   }

@@ -50,5 +50,5 @@ PYBIND11_MODULE(INTERFACE_NAME, m) {
   register_cutlass(m_perf, m_run);
   register_cutlass_manual(m_perf, m_run);
   register_cutlass_parallel(m_perf);
-  m.def("set_default_nrep", &set_default_nrep);
+  m_perf.def("set_default_nrep", &set_default_nrep);
 }

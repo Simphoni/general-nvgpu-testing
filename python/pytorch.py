@@ -83,4 +83,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # acre.cute_play()
+    torch.cuda.set_device(0)
+    print(f"device: {torch.cuda.get_device_name()}")
+    acre.set_default_nrep(NUM_RUNS)
     main()
