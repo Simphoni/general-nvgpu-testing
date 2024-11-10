@@ -1,5 +1,4 @@
 #include "cute/tensor.hpp"
-#include "cute/tensor_impl.hpp"
 #include "pybind11/pybind11.h"
 
 #include "cuda_utils.h"
@@ -38,17 +37,10 @@ __global__ void __launch_bounds__(128)
   // CP_ASYNC only accept 16B, cutlass 3.5.1 assertion too loose
   using GemmCopyIntrin16B = SM80_CP_ASYNC_CACHEGLOBAL<uint128_t>;
 
-  // tX for tensorX
-  Tensor tAGmem = local_tile(tensorA, gemmTiler, ctaCoord, Step<_1, X, _1>{});
   // when masked, ctaCoord become (blockIdx.x, _), selecting all the column
+  Tensor tAGmem = local_tile(tensorA, gemmTiler, ctaCoord, Step<_1, X, _1>{});
   Tensor tBGmem = local_tile(tensorB, gemmTiler, ctaCoord, Step<X, _1, _1>{});
   Tensor tCGmem = local_tile(tensorC, gemmTiler, ctaCoord, Step<_1, _1, X>{});
-
-  // auto sA_atom =
-  //     make_layout(make_shape(gemmTileM{}, gemmTileK{}), LayoutRight{});
-  // auto sAshape =
-  //     tile_to_shape(sA_atom, make_shape(gemmTileM{}, gemmTileK{},
-  //     gemmPipe{}));
 
   auto layoutASmem = composition(
       Swizzle<3, 3, 3>{},
@@ -74,11 +66,11 @@ __global__ void __launch_bounds__(128)
   // cA for [copy]TiledTensorA
   // (COPY,COPY_M,COPY_K,k_tile_count)
   ThrCopy thrCopyA = copyA.get_slice(thridx);
-  Tensor cAGmem = thrCopyA.partition_S(tAGmem);
-  Tensor cASmem = thrCopyA.partition_D(tASmem);
+  Tensor copyASrc = thrCopyA.partition_S(tAGmem);
+  Tensor copyADst = thrCopyA.partition_D(tASmem);
   ThrCopy thrCopyB = copyB.get_slice(thridx);
-  Tensor cBGmem = thrCopyB.partition_S(tBGmem);
-  Tensor cBSmem = thrCopyB.partition_D(tBSmem);
+  Tensor copyBSrc = thrCopyB.partition_S(tBGmem);
+  Tensor copyBDst = thrCopyB.partition_D(tBSmem);
 
   auto blockMMA = make_tiled_mma(
       MMA_Atom<MMA_Traits<SM80_16x8x16_F32F16F16F32_TN>>{},
@@ -86,28 +78,38 @@ __global__ void __launch_bounds__(128)
                   LayoutRight{}), // thr_layout tiles the work onto all warps
       Tile<decltype(get<0>(gemmTiler)), decltype(get<1>(gemmTiler)), _16>{});
   ThrMMA thrMMA = blockMMA.get_slice(thridx);
-  // mA for [mma]TiledTensorA
-  // auto tmp1 = blockMMA.thrfrg_B(tBSmem);
-  Tensor mASmem = thrMMA.partition_A(tASmem); // (MMA,MMA_M,MMA_K,PIPE)
-  Tensor mBSmem = thrMMA.partition_B(tBSmem);
-  Tensor mCGmem = thrMMA.partition_C(tCGmem);
+  // partition_A expect (M, K, ...)
+  Tensor mmaASmem = thrMMA.partition_A(tASmem);
+  // partition_B expect (N, K, ...)
+  Tensor mmaBSmem = thrMMA.partition_B(tBSmem);
+  // partition_C expect (M, N, ...)
+  Tensor mmaCGmem = thrMMA.partition_C(tCGmem);
 
-  // Tensor mAReg = make_tensor<fp16>(mASmem(_, _, 0, 0).shape());
-  // Tensor mBReg = make_tensor<fp16>(mBSmem(_, _, 0, 0).shape());
-  Tensor mAReg = thrMMA.make_fragment_A(mASmem(_, _, _, 0));
-  Tensor mBReg = thrMMA.make_fragment_B(mBSmem(_, _, _, 0));
-  Tensor mCReg = thrMMA.make_fragment_C(mCGmem);
+  Tensor mmaAReg = thrMMA.make_fragment_A(mmaASmem(_, _, _, 0));
+  Tensor mmaBReg = thrMMA.make_fragment_B(mmaBSmem(_, _, _, 0));
+  Tensor mmaCReg = thrMMA.make_fragment_C(mmaCGmem);
 
-  clear(mCReg);
+  clear(mmaCReg);
+  // this is the ldmatrix 8x8 command (on 4 matrices)
+  using LdMatrix = Copy_Atom<Copy_Traits<SM75_U32x4_LDSM_N>, fp16>;
 
-  constexpr int kMaxPipe = size<3>(mASmem);
-  int kTileCount = size<3>(cAGmem);
-  int kMaxBlock = size<2>(mASmem);
+  auto ldmA = make_tiled_copy_A(LdMatrix{}, blockMMA);
+  auto thrLdmA = ldmA.get_slice(thridx);
+  auto ldmASrc = thrLdmA.partition_S(tASmem);
+  auto ldmADst = thrLdmA.retile_D(mmaAReg);
+  auto ldmB = make_tiled_copy_B(LdMatrix{}, blockMMA);
+  auto ldmThrB = ldmB.get_slice(thridx);
+  auto ldmBSrc = ldmThrB.partition_S(tBSmem);
+  auto ldmBDst = ldmThrB.retile_D(mmaBReg);
+
+  constexpr int kMaxPipe = size<3>(mmaASmem);
+  int kTileCount = size<3>(copyASrc);
+  int kMaxBlock = size<2>(mmaASmem);
   int loadIdx = 0;
   for (int pipeIdx = 0; pipeIdx < kTileCount + kMaxPipe - 1; pipeIdx++) {
     if (pipeIdx < kTileCount) {
-      copy(copyA, cAGmem(_, _, _, pipeIdx), cASmem(_, _, _, loadIdx));
-      copy(copyB, cBGmem(_, _, _, pipeIdx), cBSmem(_, _, _, loadIdx));
+      copy(copyA, copyASrc(_, _, _, pipeIdx), copyADst(_, _, _, loadIdx));
+      copy(copyB, copyBSrc(_, _, _, pipeIdx), copyBDst(_, _, _, loadIdx));
     }
     if (kMaxPipe - 1 <= pipeIdx) {
       int mmaIdx = loadIdx + 1;
@@ -116,20 +118,21 @@ __global__ void __launch_bounds__(128)
       __syncthreads();
       CUTE_UNROLL
       for (int blockIdx = 0; blockIdx < kMaxBlock; blockIdx++) {
-        copy(mASmem(_, _, blockIdx, mmaIdx), mAReg(_, _, blockIdx));
-        copy(mBSmem(_, _, blockIdx, mmaIdx), mBReg(_, _, blockIdx));
-        gemm(blockMMA, mAReg(_, _, blockIdx), mBReg(_, _, blockIdx), mCReg);
+        copy(ldmA, ldmASrc(_, _, blockIdx, mmaIdx), ldmADst(_, _, blockIdx));
+        copy(ldmB, ldmBSrc(_, _, blockIdx, mmaIdx), ldmBDst(_, _, blockIdx));
+        gemm(blockMMA, mmaAReg(_, _, blockIdx), mmaBReg(_, _, blockIdx),
+             mmaCReg);
       }
     }
     loadIdx += 1;
     loadIdx = loadIdx == kMaxPipe ? 0 : loadIdx;
   }
-  Tensor mCRegFp16 = make_fragment_like<fp16>(mCReg.layout());
+  Tensor mmaCRegFp16 = make_fragment_like<fp16>(mmaCReg.layout());
   CUTE_UNROLL
-  for (int i = 0; i < size(mCReg); ++i) {
-    mCRegFp16[i] = __float2half(mCReg[i]);
+  for (int i = 0; i < size(mmaCReg); ++i) {
+    mmaCRegFp16[i] = __float2half(mmaCReg[i]);
   }
-  copy(mCRegFp16, mCGmem);
+  copy(mmaCRegFp16, mmaCGmem);
 }
 
 } // namespace parallel_kernels
@@ -172,39 +175,39 @@ void _cutlass_parallel_gemmrc_layernorm(torch::Tensor gemmA,
       "cutlass_parallel_gemmrc_layernorm");
 }
 
-void _cute_play() {
-  using namespace cute;
-  using mma_op = SM80_16x8x16_F16F16F16F16_TN;
+// void _cute_play() {
+//   using namespace cute;
+//   using mma_op = SM80_16x8x16_F16F16F16F16_TN;
 
-  using mma_traits = MMA_Traits<mma_op>;
-  using mma_atom = MMA_Atom<mma_traits>;
+//   using mma_traits = MMA_Traits<mma_op>;
+//   using mma_atom = MMA_Atom<mma_traits>;
 
-  static constexpr int kMmaEURepeatM = 2;
-  static constexpr int kMmaEURepeatN = 2;
-  static constexpr int kMmaEURepeatK = 1;
+//   static constexpr int kMmaEURepeatM = 2;
+//   static constexpr int kMmaEURepeatN = 2;
+//   static constexpr int kMmaEURepeatK = 1;
 
-  using mma_atom_shape = mma_traits::Shape_MNK;
-  static constexpr int kMmaPM = 1 * kMmaEURepeatM * get<0>(mma_atom_shape{});
-  static constexpr int kMmaPN = 2 * kMmaEURepeatN * get<1>(mma_atom_shape{});
-  static constexpr int kMmaPK = 1 * kMmaEURepeatK * get<2>(mma_atom_shape{});
-  using MMA_EU_RepeatT = decltype(make_layout(make_shape(
-      Int<kMmaEURepeatM>{}, Int<kMmaEURepeatN>{}, Int<kMmaEURepeatK>{})));
-  using MMA_P_T = Tile<Int<kMmaPM>, Int<kMmaPN>, Int<kMmaPK>>;
-  using SmemLayoutAtomC = decltype(composition(
-      Swizzle<2, 3, 3>{}, make_layout(make_shape(Int<kMmaPM>{}, Int<kMmaPN>{}),
-                                      make_stride(Int<kMmaPN>{}, Int<1>{}))));
-  using MMA = decltype(make_tiled_mma(mma_atom{}, MMA_EU_RepeatT{}, MMA_P_T{}));
-  print_latex(SmemLayoutAtomC{});
-  using s2r_copy_op = SM75_U32x4_LDSM_N;
-  using s2r_copy_traits = Copy_Traits<s2r_copy_op>;
-  using s2r_copy_atom = Copy_Atom<s2r_copy_traits, fp16>;
-  MMA tiled_mma;
-  auto s2r_tiled_copy_a = make_tiled_copy_A(s2r_copy_atom{}, tiled_mma);
-  print_latex(s2r_tiled_copy_a);
-}
+//   using mma_atom_shape = mma_traits::Shape_MNK;
+//   static constexpr int kMmaPM = 1 * kMmaEURepeatM * get<0>(mma_atom_shape{});
+//   static constexpr int kMmaPN = 2 * kMmaEURepeatN * get<1>(mma_atom_shape{});
+//   static constexpr int kMmaPK = 1 * kMmaEURepeatK * get<2>(mma_atom_shape{});
+//   using MMA_EU_RepeatT = decltype(make_layout(make_shape(
+//       Int<kMmaEURepeatM>{}, Int<kMmaEURepeatN>{}, Int<kMmaEURepeatK>{})));
+//   using MMA_P_T = Tile<Int<kMmaPM>, Int<kMmaPN>, Int<kMmaPK>>;
+//   using SmemLayoutAtomC = decltype(composition(
+//       Swizzle<2, 3, 3>{}, make_layout(make_shape(Int<kMmaPM>{},
+//       Int<kMmaPN>{}),
+//                                       make_stride(Int<kMmaPN>{},
+//                                       Int<1>{}))));
+//   using MMA = decltype(make_tiled_mma(mma_atom{}, MMA_EU_RepeatT{},
+//   MMA_P_T{})); print_latex(SmemLayoutAtomC{}); using s2r_copy_op =
+//   SM75_U32x4_LDSM_N; using s2r_copy_traits = Copy_Traits<s2r_copy_op>; using
+//   s2r_copy_atom = Copy_Atom<s2r_copy_traits, fp16>; MMA tiled_mma; auto
+//   s2r_tiled_copy_a = make_tiled_copy_A(s2r_copy_atom{}, tiled_mma);
+//   print_latex(s2r_tiled_copy_a);
+// }
 
 void register_cutlass_parallel(pybind11::module &m) {
   m.def("cutlass_parallel_gemmrc_layernorm",
         &_cutlass_parallel_gemmrc_layernorm);
-  m.def("cute_play", &_cute_play);
+  // m.def("cute_play", &_cute_play);
 }
