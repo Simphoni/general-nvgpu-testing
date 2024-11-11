@@ -31,9 +31,9 @@ def run_and_check(func, a, b, c, d):
     except AssertionError as e:
         print("v" * 40)
         print(colorama.Fore.RED + f"{func.__name__} failure: {e}")
-        print(c)
-        print(d)
-        print((d * d).max())
+        # print(c)
+        # print(d)
+        # print(f"{(d * d).max()=}")
         print("^" * 40)
 
 def test_gemm(m: int, n: int, k: int, dtype: str):
@@ -79,7 +79,7 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     # test_gemm(64, 4096, 11008, "fp16")
     test_gemm(4096, 4096, 4096, "fp16")
-    #test_gemm(8192, 4096, 8192, "fp16")
+    # test_gemm(8192, 4096, 8192, "fp16")
 
 
 if __name__ == "__main__":

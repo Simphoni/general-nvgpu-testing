@@ -20,7 +20,7 @@ __global__ void __launch_bounds__(128)
   using gemmTileM = _128;
   using gemmTileN = _128;
   using gemmTileK = _32;
-  using gemmPipe = _5;
+  using gemmPipe = _4;
   const int thridx = threadIdx.x + threadIdx.y * blockDim.x;
   auto ctaCoord = make_coord(blockIdx.x, blockIdx.y, _);
   auto gemmTiler = Shape<gemmTileM, gemmTileN, gemmTileK>{};
@@ -106,15 +106,37 @@ __global__ void __launch_bounds__(128)
   int kTileCount = size<3>(copyASrc);
   int kMaxBlock = size<2>(mmaASmem);
   int loadIdx = 0;
-  for (int pipeIdx = 0; pipeIdx < kTileCount + kMaxPipe - 1; pipeIdx++) {
+
+  {
+    int pipeIdx = 0;
+    copy(copyA, copyASrc(_, _, _, pipeIdx), copyADst(_, _, _, loadIdx));
+    copy(copyB, copyBSrc(_, _, _, pipeIdx), copyBDst(_, _, _, loadIdx));
+    cp_async_fence();
+    int mmaIdx = 0;
+    cp_async_wait<0>();
+    // loading from shared requires barrier
+    __syncthreads();
+    CUTE_UNROLL
+    for (int blockIdx = 0; blockIdx < kMaxBlock; blockIdx++) {
+      copy(ldmA, ldmASrc(_, _, blockIdx, mmaIdx), ldmADst(_, _, blockIdx));
+      copy(ldmB, ldmBSrc(_, _, blockIdx, mmaIdx), ldmBDst(_, _, blockIdx));
+      gemm(blockMMA, mmaAReg(_, _, blockIdx), mmaBReg(_, _, blockIdx), mmaCReg);
+    }
+    loadIdx += 1;
+    loadIdx = loadIdx == kMaxPipe ? 0 : loadIdx;
+  }
+
+  for (int pipeIdx = 1; pipeIdx < kTileCount + kMaxPipe - 1; pipeIdx++) {
     if (pipeIdx < kTileCount) {
       copy(copyA, copyASrc(_, _, _, pipeIdx), copyADst(_, _, _, loadIdx));
       copy(copyB, copyBSrc(_, _, _, pipeIdx), copyBDst(_, _, _, loadIdx));
+      cp_async_fence();
     }
-    if (kMaxPipe - 1 <= pipeIdx) {
+    if (kMaxPipe <= pipeIdx) {
       int mmaIdx = loadIdx + 1;
       mmaIdx = mmaIdx == kMaxPipe ? 0 : mmaIdx;
       cp_async_wait<kMaxPipe - 1>();
+      // loading from shared requires barrier
       __syncthreads();
       CUTE_UNROLL
       for (int blockIdx = 0; blockIdx < kMaxBlock; blockIdx++) {
@@ -128,11 +150,16 @@ __global__ void __launch_bounds__(128)
     loadIdx = loadIdx == kMaxPipe ? 0 : loadIdx;
   }
   Tensor mmaCRegFp16 = make_fragment_like<fp16>(mmaCReg.layout());
-  CUTE_UNROLL
-  for (int i = 0; i < size(mmaCReg); ++i) {
-    mmaCRegFp16[i] = __float2half(mmaCReg[i]);
+  for (int j = 0; j < size<2>(mmaCReg); j++) {
+    auto regFp16 = mmaCRegFp16(_, _, j);
+    auto regFp32 = mmaCReg(_, _, j);
+    auto gmem = mmaCGmem(_, _, j);
+    CUTE_UNROLL
+    for (int i = 0; i < size(regFp32); ++i) {
+      regFp16[i] = __float2half(regFp32[i]);
+    }
+    copy(regFp16, gmem);
   }
-  copy(mmaCRegFp16, mmaCGmem);
 }
 
 } // namespace parallel_kernels
@@ -163,13 +190,15 @@ void _cutlass_parallel_gemmrc_layernorm(torch::Tensor gemmA,
   fp16 *gemmA_ptr = reinterpret_cast<fp16 *>(gemmA.data_ptr());
   fp16 *gemmB_ptr = reinterpret_cast<fp16 *>(gemmB.data_ptr());
   fp16 *gemmC_ptr = reinterpret_cast<fp16 *>(gemmC.data_ptr());
+
+  constexpr int SMEM_SIZE = 64 * 1024;
   cudaSafeCall(cudaFuncSetAttribute(parallel_kernels::cute_parallel_gemm_ln,
                                     cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                    80 * 1024));
+                                    SMEM_SIZE));
   test_pipeline(
       [&]() {
         parallel_kernels::
-            cute_parallel_gemm_ln<<<gridDim, blockDim, 80 * 1024>>>(
+            cute_parallel_gemm_ln<<<gridDim, blockDim, SMEM_SIZE>>>(
                 gemmA_ptr, gemmB_ptr, gemmC_ptr, gemmM, gemmN, gemmK);
       },
       "cutlass_parallel_gemmrc_layernorm");
