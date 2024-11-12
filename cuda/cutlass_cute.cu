@@ -23,7 +23,19 @@ __global__ void __launch_bounds__(128)
   using gemmTileK = _32;
   using gemmPipe = _4;
   const int thridx = threadIdx.x + threadIdx.y * blockDim.x;
-  auto ctaCoord = make_coord(blockIdx.x, blockIdx.y, _);
+  int ctaIdx = blockIdx.x + blockIdx.y * gridDim.x;
+  // mtile for 'Microtile'.
+  // It's used for mapping between CTA and the Gemm sub-matrix,
+  // targeting better L2 cache utilization.
+  constexpr int mtileM = 8;
+  int mtileSize = mtileM * gridDim.y;
+  int mtileIdx = ctaIdx / mtileSize;
+  int tileIdx = ctaIdx % mtileSize;
+  int mtileMSize = min(mtileM, gridDim.x - mtileIdx * mtileM);
+  int mIdx = mtileIdx * mtileM + tileIdx % mtileMSize;
+  int nIdx = tileIdx / mtileMSize;
+  auto ctaCoord = make_coord(mIdx, nIdx, _);
+  // auto ctaCoord = make_coord(blockIdx.x, blockIdx.y, _);
   auto gemmTiler = Shape<gemmTileM, gemmTileN, gemmTileK>{};
 
   auto tensorA =
