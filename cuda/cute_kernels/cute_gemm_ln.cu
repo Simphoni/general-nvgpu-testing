@@ -1,33 +1,39 @@
+// #include <cooperative_groups.h>
+#include <cuda.h>
+#include <cuda/pipeline>
+#include <cuda_fp16.h>
+
 #include "cute/tensor.hpp"
-#include "pybind11/pybind11.h"
 
 #include "cuda_utils.h"
 #include "gemm_utils.h"
-#include "torch_utils.h"
 
-using fp16 = cute::half_t;
+double test_pipeline(std::function<void()> func, const std::string &name,
+                     int repeat = -1);
 
 namespace parallel_kernels {
 
 using namespace cute;
 using namespace cutlass;
+using fp16 = cute::half_t;
 
 extern __shared__ uint8_t shmem_ptr[];
 
-__global__ void __launch_bounds__(128)
-    cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
-                          fp16 *gemmC_ptr, // fp16 *lnA, fp16 *lnB,
-                          int gemmM, int gemmN, int gemmK) {
+constexpr int kThreadGroupSize = 32 * 4;
+
+static __global__ void __launch_bounds__(kThreadGroupSize)
+    kernel_cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
+                                 fp16 *gemmC_ptr, int gemmM, int gemmN,
+                                 int gemmK, fp16 *lnA_ptr, fp16 *lnB_ptr,
+                                 int lnM) {
+  const int thridx = threadIdx.x + threadIdx.y * blockDim.x;
+  const int ctaIdx = blockIdx.x + blockIdx.y * gridDim.x;
+
   using gemmTileM = _128;
   using gemmTileN = _128;
   using gemmTileK = _32;
   using gemmPipe = _4;
-  const int thridx = threadIdx.x + threadIdx.y * blockDim.x;
-  int ctaIdx = blockIdx.x + blockIdx.y * gridDim.x;
-  // mtile for 'Microtile'.
-  // It's used for mapping between CTA and the Gemm sub-matrix,
-  // targeting better L2 cache utilization.
-  constexpr int mtileM = 8;
+  int mtileM = 8;
   int mtileSize = mtileM * gridDim.y;
   int mtileIdx = ctaIdx / mtileSize;
   int tileIdx = ctaIdx % mtileSize;
@@ -35,7 +41,6 @@ __global__ void __launch_bounds__(128)
   int mIdx = mtileIdx * mtileM + tileIdx % mtileMSize;
   int nIdx = tileIdx / mtileMSize;
   auto ctaCoord = make_coord(mIdx, nIdx, _);
-  // auto ctaCoord = make_coord(blockIdx.x, blockIdx.y, _);
   auto gemmTiler = Shape<gemmTileM, gemmTileN, gemmTileK>{};
 
   auto tensorA =
@@ -47,11 +52,9 @@ __global__ void __launch_bounds__(128)
   auto tensorC =
       make_tensor(make_gmem_ptr(gemmC_ptr),
                   make_layout(make_shape(gemmM, gemmN), LayoutRight{}));
-  // CP_ASYNC only accept 16B, cutlass 3.5.1 assertion too loose
   using AsyncCopy =
       Copy_Atom<Copy_Traits<SM80_CP_ASYNC_CACHEGLOBAL<uint128_t>>, fp16>;
 
-  // when masked, ctaCoord become (blockIdx.x, _), selecting all the column
   Tensor tAGmem = local_tile(tensorA, gemmTiler, ctaCoord, Step<_1, X, _1>{});
   Tensor tBGmem = local_tile(tensorB, gemmTiler, ctaCoord, Step<X, _1, _1>{});
   Tensor tCGmem = local_tile(tensorC, gemmTiler, ctaCoord, Step<_1, _1, X>{});
@@ -67,9 +70,7 @@ __global__ void __launch_bounds__(128)
   auto layoutCSmem =
       composition(Swizzle<3, 4, 3>{},
                   make_layout(Shape<gemmTileM, gemmTileN>{}, LayoutRight{}));
-  // [cosize_v<decltype(layoutASmem)>];
   fp16 *sA = (fp16 *)shmem_ptr;
-  // [cosize_v<decltype(layoutBSmem)>];
   fp16 *sB = sA + cosize_v<decltype(layoutASmem)>;
   fp16 *sC = (fp16 *)shmem_ptr; // sA is out of scope when sC is alive
   Tensor tASmem = make_tensor(make_smem_ptr(sA), layoutASmem);
@@ -81,8 +82,6 @@ __global__ void __launch_bounds__(128)
                       make_layout(Shape<_1, _8>{}, LayoutRight{}));
   auto copyB = copyA;
 
-  // cA for [copy]TiledTensorA
-  // (COPY,COPY_M,COPY_K,k_tile_count)
   ThrCopy thrCopyA = copyA.get_slice(thridx);
   Tensor copyASrc = thrCopyA.partition_S(tAGmem);
   Tensor copyADst = thrCopyA.partition_D(tASmem);
@@ -90,17 +89,13 @@ __global__ void __launch_bounds__(128)
   Tensor copyBSrc = thrCopyB.partition_S(tBGmem);
   Tensor copyBDst = thrCopyB.partition_D(tBSmem);
 
-  // thr_layout tiles the work onto all warps
   auto blockMMA = make_tiled_mma(
       MMA_Atom<MMA_Traits<SM80_16x8x16_F32F16F16F32_TN>>{},
       make_layout(Shape<_2, _2>{}, LayoutRight{}),
       Tile<decltype(get<0>(gemmTiler)), decltype(get<1>(gemmTiler)), _16>{});
   ThrMMA thrMMA = blockMMA.get_slice(thridx);
-  // partition_A expect (M, K, ...)
   Tensor mmaASmem = thrMMA.partition_A(tASmem);
-  // partition_B expect (N, K, ...)
   Tensor mmaBSmem = thrMMA.partition_B(tBSmem);
-  // partition_C expect (M, N, ...)
   Tensor mmaCSmem = thrMMA.partition_C(tCSmem);
 
   Tensor mmaAReg = thrMMA.make_fragment_A(mmaASmem(_, _, _, 0));
@@ -108,7 +103,6 @@ __global__ void __launch_bounds__(128)
   Tensor mmaCReg = thrMMA.make_fragment_C(mmaCSmem);
 
   clear(mmaCReg);
-  // this is the ldmatrix 8x8 command (on 4 matrices)
   using LdMatrix = Copy_Atom<Copy_Traits<SM75_U32x4_LDSM_N>, fp16>;
 
   auto ldmA = make_tiled_copy_A(LdMatrix{}, blockMMA);
@@ -125,7 +119,8 @@ __global__ void __launch_bounds__(128)
   int kMaxBlock = size<2>(mmaASmem);
   int loadIdx = 0;
 
-  {
+  int usePrologue = 1; // 0 or 1
+  if (usePrologue) {
     int pipeIdx = 0;
     int mmaIdx = 0;
     copy(copyA, copyASrc(_, _, _, pipeIdx), copyADst(_, _, _, loadIdx));
@@ -142,17 +137,20 @@ __global__ void __launch_bounds__(128)
     loadIdx = 1;
   }
 
-  for (int pipeIdx = 1; pipeIdx < kTileCount + kMaxPipe - 1; pipeIdx++) {
+  for (int pipeIdx = usePrologue; pipeIdx < kTileCount + kMaxPipe - 1;
+       pipeIdx++) {
     if (pipeIdx < kTileCount) {
       copy(copyA, copyASrc(_, _, _, pipeIdx), copyADst(_, _, _, loadIdx));
       copy(copyB, copyBSrc(_, _, _, pipeIdx), copyBDst(_, _, _, loadIdx));
       cp_async_fence();
     }
-    if (kMaxPipe <= pipeIdx) {
+    // if (kMaxPipe - 1 <= pipeIdx - usePrologue) {
+    // }
+    if (kMaxPipe - 1 <= pipeIdx - usePrologue) {
+      cp_async_wait<kMaxPipe - 1>();
+      __syncthreads();
       int mmaIdx = loadIdx + 1;
       mmaIdx = mmaIdx == kMaxPipe ? 0 : mmaIdx;
-      cp_async_wait<kMaxPipe - 1>();
-      __syncthreads(); // loading from shared requires barrier
       CUTE_UNROLL
       for (int blockIdx = 0; blockIdx < kMaxBlock; blockIdx++) {
         copy(ldmA, ldmASrc(_, _, blockIdx, mmaIdx), ldmADst(_, _, blockIdx));
@@ -169,11 +167,8 @@ __global__ void __launch_bounds__(128)
   using StMatrix = Copy_Atom<UniversalCopy<AlignedArray<fp16, 2>>, fp16>;
   using Copy8B = Copy_Atom<UniversalCopy<AlignedArray<fp16, 4>>, fp16>;
   auto stmC = make_tiled_copy_C(StMatrix{}, blockMMA);
-  // auto thrStmC = stmC.get_slice(thridx);
-  // auto stmCSrc = thrStmC.retile_S(mmaCRegFp16);
-  // auto stmCDst = thrStmC.partition_D(tCSmem);
   auto copyC =
-      make_tiled_copy(Copy8B{}, make_layout(Shape<_8, _16>{}, LayoutRight{}),
+      make_tiled_copy(Copy8B{}, make_layout(Shape<_4, _32>{}, LayoutRight{}),
                       make_layout(Shape<_1, _4>{}, LayoutRight{}));
   auto thrCopyC = copyC.get_slice(thridx);
   auto copyCSrc = thrCopyC.partition_S(tCSmem);
@@ -183,10 +178,8 @@ __global__ void __launch_bounds__(128)
     auto regFp32 = mmaCReg(_, _, j);
     auto smem = mmaCSmem(_, _, j);
     CUTE_UNROLL
-    __half2 packedHalf;
-    CUTE_UNROLL
     for (int i = 0; i < size(regFp32); i += 2) {
-      packedHalf = __floats2half2_rn(regFp32[i], regFp32[i + 1]);
+      __half2 packedHalf = __floats2half2_rn(regFp32[i], regFp32[i + 1]);
       regFp16[i] = packedHalf.x;
       regFp16[i + 1] = packedHalf.y;
     }
@@ -194,55 +187,59 @@ __global__ void __launch_bounds__(128)
   }
   __syncthreads();
   copy(copyC, copyCSrc, copyCDst);
+
+  // int total_workers = gridDim.x * gridDim.y;
+  // int start_idx = (ctaIdx * 128 + thridx - 128) * 2;
+  // int stride = total_workers * 128 * 2;
+  // int step = 0;
+  // for (int i = start_idx; i < lnM; i += stride) {
+  //   if (step <= gemmK / 32) {
+  //     __syncthreads();
+  //   }
+  //   __half2 tmp = *reinterpret_cast<__half2 *>(&lnA_ptr[i]);
+  //   __half2 tmp2;
+  //   tmp2.x = tmp.x / (__half(1.0) + hexp(-tmp.x));
+  //   tmp2.y = tmp.y / (__half(1.0) + hexp(-tmp.y));
+  //   *reinterpret_cast<__half2 *>(&lnB_ptr[i]) = tmp2;
+  //   step++;
+  // }
+  // while (step <= gemmK / 32) {
+  //   __syncthreads();
+  //   step++;
+  // }
 }
 
-} // namespace parallel_kernels
-
-double test_pipeline(std::function<void()> func, const std::string &name,
-                     int repeat = -1);
-
-// parallel operator
-// output:
-//  - gemmC <- gemmA * gemmB
-//  - lnB <- layernorm(lnA)
-// layout:
-// - 'c' for colmajor, 'r' for rowmajor
-// - gemmC is row major, it could be important for the following operators
-void _cutlass_parallel_gemmrc_layernorm(torch::Tensor gemmA,
-                                        torch::Tensor gemmB, torch::Tensor gemmC
-                                        // torch::Tensor ln_A,
-                                        // torch::Tensor ln_B
-) {
-  // for gemmrc, A[m,k], B[n,k], C[m,n], (LayoutRight)
-  int gemmM = gemmC.size(0);
-  int gemmN = gemmC.size(1);
-  int gemmK = gemmA.size(1);
-  int blockX = gemmM / 128;
-  int blockY = gemmN / 128;
-  dim3 gridDim(blockX, blockY);
-  dim3 blockDim(128, 1, 1);
-  fp16 *gemmA_ptr = reinterpret_cast<fp16 *>(gemmA.data_ptr());
-  fp16 *gemmB_ptr = reinterpret_cast<fp16 *>(gemmB.data_ptr());
-  fp16 *gemmC_ptr = reinterpret_cast<fp16 *>(gemmC.data_ptr());
+void entry_cute_parallel_gemmrc_lnr(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
+                                    fp16 *gemmC_ptr, int gemmM, int gemmN,
+                                    int gemmK, fp16 *lnA_ptr, fp16 *lnB_ptr,
+                                    int lnM, int lnN) {
+  dim3 gridDim(gemmM / 128, gemmN / 128);
+  dim3 blockDim(kThreadGroupSize, 1, 1);
 
   constexpr int SMEM_SIZE = 64 * 1024;
-  cudaSafeCall(cudaFuncSetAttribute(parallel_kernels::cute_parallel_gemm_ln,
-                                    cudaFuncAttributeMaxDynamicSharedMemorySize,
-                                    SMEM_SIZE));
-  std::string name = "cutlass_parallel_gemmrc_layernorm";
+  cudaSafeCall(cudaFuncSetAttribute(
+      parallel_kernels::kernel_cute_parallel_gemm_ln,
+      cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_SIZE));
+  std::string name = "cutlass_parallel_gemmrc";
+  // int lnSize = lnM * lnN;
+  // void *kernelArgs[] = {(void *)gemmA_ptr, (void *)gemmB_ptr, (void
+  // *)gemmC_ptr,
+  //                       (void *)&gemmM,    (void *)&gemmN,    (void *)&gemmK,
+  //                       (void *)lnA_ptr,   (void *)lnB_ptr,   (void
+  //                       *)&lnSize};
   double latency = test_pipeline(
       [&]() {
+        // cudaLaunchCooperativeKernel(
+        //     (void *)parallel_kernels::kernel_cute_parallel_gemm_ln, gridDim,
+        //     blockDim, kernelArgs, SMEM_SIZE, nullptr);
         parallel_kernels::
-            cute_parallel_gemm_ln<<<gridDim, blockDim, SMEM_SIZE>>>(
-                gemmA_ptr, gemmB_ptr, gemmC_ptr, gemmM, gemmN, gemmK);
+            kernel_cute_parallel_gemm_ln<<<gridDim, blockDim, SMEM_SIZE>>>(
+                gemmA_ptr, gemmB_ptr, gemmC_ptr, gemmM, gemmN, gemmK, lnA_ptr,
+                lnB_ptr, lnM * lnN);
       },
       name);
   double tflops = get_tflops(gemmM, gemmN, gemmK, latency);
   printf("%s: %.2f TFLOPS\n", name.data(), tflops);
 }
 
-void register_cutlass_parallel(pybind11::module &m) {
-  m.def("cutlass_parallel_gemmrc_layernorm",
-        &_cutlass_parallel_gemmrc_layernorm);
-  // m.def("cute_play", &_cute_play);
-}
+} // namespace parallel_kernels

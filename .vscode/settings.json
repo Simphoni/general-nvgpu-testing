@@ -12,4 +12,7 @@
         "--limit-results=20",
         "--query-driver=/home/spack/spack/opt/spack/linux-ubuntu22.04-broadwell/gcc-11.2.0/gcc-12.1.0-dcjoksjpihne5m7uqj5ligkgzg2wnpwg/bin/gcc,/home/spack/spack/opt/spack/linux-ubuntu22.04-broadwell/gcc-12.1.0/cuda-12.1.1-k7wgk32miw5juul4rg6evzsklv33whxo/bin/nvcc"
     ],
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter"
+    },
 }

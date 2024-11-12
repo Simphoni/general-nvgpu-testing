@@ -21,7 +21,7 @@ void register_cublas(pybind11::module &mod_perf, pybind11::module &mod_run);
 void register_cutlass(pybind11::module &mod_perf, pybind11::module &mod_run);
 void register_cutlass_manual(pybind11::module &mod_perf,
                              pybind11::module &mod_run);
-void register_cutlass_parallel(pybind11::module &m);
+void register_cute_kernels(pybind11::module &m);
 
 namespace {
 
@@ -49,6 +49,6 @@ PYBIND11_MODULE(INTERFACE_NAME, m) {
   register_cublas(m_perf, m_run);
   register_cutlass(m_perf, m_run);
   register_cutlass_manual(m_perf, m_run);
-  register_cutlass_parallel(m_perf);
+  register_cute_kernels(m_perf);
   m_perf.def("set_default_nrep", &set_default_nrep);
 }
