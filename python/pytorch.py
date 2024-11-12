@@ -79,7 +79,7 @@ def main():
     torch.backends.cuda.matmul.allow_tf32 = True
     # test_gemm(64, 4096, 11008, "fp16")
     test_gemm(4096, 4096, 4096, "fp16")
-    # test_gemm(8192, 4096, 8192, "fp16")
+    test_gemm(8192, 4096, 8192, "fp16")
 
 
 if __name__ == "__main__":
