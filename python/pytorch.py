@@ -33,7 +33,7 @@ def run_and_check(func, inputs, answers, outputs):
             outputs[i].shape == answers[i].shape
         ), f"{i=}, {outputs[i].shape=}, {answers[i].shape=}"
     for d in outputs:
-        torch.randn(d.size(), out=d)
+        torch.zeros(d.size(), out=d)
     func(*(inputs + outputs))
 
     errors = []
@@ -64,11 +64,13 @@ def run_and_check(func, inputs, answers, outputs):
                 + f"{func.__name__} tensor({itensor}): mismatch percent = {percent}%"
             )
         else:
+            print(answers[itensor])
+            print(outputs[itensor])
             print(colorama.Fore.RED + f"{func.__name__} tensor({itensor}): {err}")
     print("^" * 40)
 
 
-def universal_test(torchfunc, cutefuncs, input_shapes, output_shapes, dtype):
+def universal_test(ansfunc, torchfunc, cutefuncs, input_shapes, output_shapes, dtype):
     inputs = [torch.randn(shape, dtype=dtype, device="cuda") for shape in input_shapes]
     outputs = [
         torch.zeros(shape, dtype=dtype, device="cuda") for shape in output_shapes
@@ -88,6 +90,7 @@ def universal_test(torchfunc, cutefuncs, input_shapes, output_shapes, dtype):
     latency = (toc - tic) / NUM_RUNS
     print(f"PyTorch: {latency * 1e3} ms")
 
+    ansfunc(*(inputs + answers))
     for func in cutefuncs:
         run_and_check(func, inputs, answers, outputs)
 
@@ -100,6 +103,7 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
         torch.matmul(a, b.t(), out=c)
 
     universal_test(
+        torchfunc,
         torchfunc,
         [
             # acre.cublas_gemm_nt,
@@ -119,21 +123,24 @@ def test_gemm_ln(gemmM, gemmN, gemmK, lnM, lnN, dtype):
     dtype = STR_DTYPE_MAPPING[dtype]
     print(f"[TEST] GEMM_LN: {gemmM=}, {gemmN=}, {gemmK=}, {lnM=}, {lnN=}, {dtype=}")
 
-    def torchfunc(a, b, c, d, e):
+    def ansfunc(a, b, c, d, e):
         torch.matmul(a, b.t(), out=d)
         e.copy_(torch.nn.functional.silu(c))
 
+    def torchfunc(a, b, c, d, e):
+        torch.matmul(a, b.t(), out=d)
+        torch.nn.functional.silu(c)
+
     def acrefunc(a, b, c, d, e):
-        # input: a, b, c
-        # output: d, e
-        # acre: (a,b)->c, (d)->e
+        # acre: (a,b)->d, (c)->e
         acre.cutlass_parallel_gemmrc_lnr(a, b, d, c, e)
 
     universal_test(
+        ansfunc,
         torchfunc,
         [acrefunc],
-        [(gemmM, gemmK), (gemmN, gemmK), (lnM, lnN)],
-        [(gemmM, gemmN), (lnM, lnN)],
+        [(gemmM, gemmK), (gemmN, gemmK), (lnM * 2, lnN)],
+        [(gemmM, gemmN), (lnM * 2, lnN)],
         dtype,
     )
     print("-" * 80)

@@ -1,4 +1,3 @@
-// #include <cooperative_groups.h>
 #include <cuda.h>
 #include <cuda/pipeline>
 #include <cuda_fp16.h>
@@ -19,9 +18,10 @@ using fp16 = cute::half_t;
 
 extern __shared__ uint8_t shmem_ptr[];
 
-constexpr int kThreadGroupSize = 32 * 4;
+#define ALIGN_UP(x, size) (((x) + (size)-1) / (size) * (size))
+#define DIV_UP(x, size) (((x) + (size)-1) / (size))
 
-static __global__ void __launch_bounds__(kThreadGroupSize)
+static __global__ void __launch_bounds__(128)
     kernel_cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
                                  fp16 *gemmC_ptr, int gemmM, int gemmN,
                                  int gemmK, fp16 *lnA_ptr, fp16 *lnB_ptr,
@@ -70,8 +70,13 @@ static __global__ void __launch_bounds__(kThreadGroupSize)
   auto layoutCSmem =
       composition(Swizzle<3, 4, 3>{},
                   make_layout(Shape<gemmTileM, gemmTileN>{}, LayoutRight{}));
-  fp16 *sA = (fp16 *)shmem_ptr;
-  fp16 *sB = sA + cosize_v<decltype(layoutASmem)>;
+
+  fp16 *shmem_fp16 = (fp16 *)shmem_ptr;
+  fp16 *sA = shmem_fp16;
+  shmem_fp16 += cosize_v<decltype(layoutASmem)>;
+  fp16 *sB = shmem_fp16;
+  shmem_fp16 += cosize_v<decltype(layoutBSmem)>;
+
   fp16 *sC = (fp16 *)shmem_ptr; // sA is out of scope when sC is alive
   Tensor tASmem = make_tensor(make_smem_ptr(sA), layoutASmem);
   Tensor tBSmem = make_tensor(make_smem_ptr(sB), layoutBSmem);
@@ -117,39 +122,51 @@ static __global__ void __launch_bounds__(kThreadGroupSize)
   constexpr int kMaxPipe = size<3>(mmaASmem);
   int kTileCount = size<3>(copyASrc);
   int kMaxBlock = size<2>(mmaASmem);
-  int loadIdx = 0;
+  int copyIdx = 0;
 
-  int usePrologue = 1; // 0 or 1
-  if (usePrologue) {
-    int pipeIdx = 0;
-    int mmaIdx = 0;
-    copy(copyA, copyASrc(_, _, _, pipeIdx), copyADst(_, _, _, loadIdx));
-    copy(copyB, copyBSrc(_, _, _, pipeIdx), copyBDst(_, _, _, loadIdx));
-    cp_async_fence();
-    cp_async_wait<0>();
-    __syncthreads();
-    CUTE_UNROLL
-    for (int blockIdx = 0; blockIdx < kMaxBlock; blockIdx++) {
-      copy(ldmA, ldmASrc(_, _, blockIdx, mmaIdx), ldmADst(_, _, blockIdx));
-      copy(ldmB, ldmBSrc(_, _, blockIdx, mmaIdx), ldmBDst(_, _, blockIdx));
-      gemm(blockMMA, mmaAReg(_, _, blockIdx), mmaBReg(_, _, blockIdx), mmaCReg);
-    }
-    loadIdx = 1;
-  }
+  constexpr int elemwiseGranularity = 256;
+  int blockWorkload = lnM / (gridDim.x * gridDim.y);
+  blockWorkload = ALIGN_UP(blockWorkload, elemwiseGranularity);
+  int blockStart = blockWorkload * ctaIdx;
+  int blockEnd = blockStart + blockWorkload;
+  blockStart = min(blockStart, lnM);
+  blockEnd = min(blockEnd, lnM);
+  int perStageWorkload = (blockEnd - blockStart) / kTileCount;
+  perStageWorkload = ALIGN_UP(perStageWorkload, elemwiseGranularity);
+  int kSiluTileCount = DIV_UP(blockEnd - blockStart, perStageWorkload);
 
-  for (int pipeIdx = usePrologue; pipeIdx < kTileCount + kMaxPipe - 1;
-       pipeIdx++) {
+  auto layoutSiluSmem = Layout<Shape<Int<elemwiseGranularity>, gemmPipe>>{};
+  fp16 *siluA = shmem_fp16;
+  shmem_fp16 += cosize_v<decltype(layoutSiluSmem)>;
+  Tensor tSiluSmem = make_tensor(make_smem_ptr(siluA), layoutSiluSmem);
+  Tensor tSiluAGmem =
+      make_tensor(make_gmem_ptr(lnA_ptr + blockStart),
+                  make_layout(make_shape(blockEnd - blockStart)));
+  constexpr int kSiluCopyThreads = elemwiseGranularity / 8;
+  auto copySiluA = make_tiled_copy(
+      AsyncCopy{}, Layout<Shape<Int<kSiluCopyThreads>>>{}, Layout<Shape<_8>>{});
+  ThrCopy thrcopySiluA = copySiluA.get_slice(thridx);
+  Tensor copySiluASrc = thrcopySiluA.partition_S(tSiluAGmem);
+  Tensor copySiluADst = thrcopySiluA.partition_D(tSiluSmem);
+  bool predcopySiluA = thridx < kSiluCopyThreads;
+
+  for (int pipeIdx = 0; pipeIdx < kTileCount + kMaxPipe - 1; pipeIdx++) {
     if (pipeIdx < kTileCount) {
-      copy(copyA, copyASrc(_, _, _, pipeIdx), copyADst(_, _, _, loadIdx));
-      copy(copyB, copyBSrc(_, _, _, pipeIdx), copyBDst(_, _, _, loadIdx));
+      copy(copyA, copyASrc(_, _, _, pipeIdx), copyADst(_, _, _, copyIdx));
+      copy(copyB, copyBSrc(_, _, _, pipeIdx), copyBDst(_, _, _, copyIdx));
+    }
+    if (pipeIdx < kSiluTileCount) {
+      if (predcopySiluA) {
+        copy(copySiluA, copySiluASrc(_, pipeIdx), copySiluADst(_, 0, copyIdx));
+      }
+    }
+    if (pipeIdx < kTileCount) {
       cp_async_fence();
     }
-    // if (kMaxPipe - 1 <= pipeIdx - usePrologue) {
-    // }
-    if (kMaxPipe - 1 <= pipeIdx - usePrologue) {
+    if (kMaxPipe - 1 <= pipeIdx) {
       cp_async_wait<kMaxPipe - 1>();
       __syncthreads();
-      int mmaIdx = loadIdx + 1;
+      int mmaIdx = copyIdx + 1;
       mmaIdx = mmaIdx == kMaxPipe ? 0 : mmaIdx;
       CUTE_UNROLL
       for (int blockIdx = 0; blockIdx < kMaxBlock; blockIdx++) {
@@ -158,9 +175,19 @@ static __global__ void __launch_bounds__(kThreadGroupSize)
         gemm(blockMMA, mmaAReg(_, _, blockIdx), mmaBReg(_, _, blockIdx),
              mmaCReg);
       }
+      if (pipeIdx < kMaxPipe - 1 + kSiluTileCount) {
+        __half2 val = ((__half2 *)(&tSiluSmem(_, mmaIdx)[0]))[thridx];
+        val.x = val.x / (hexp(-val.x) + __half(1));
+        val.y = val.y / (hexp(-val.y) + __half(1));
+        int jobidx = pipeIdx - kMaxPipe + 1;
+        __stwt((__half2 *)(lnB_ptr + blockStart + jobidx * perStageWorkload) +
+                   thridx,
+               val);
+      }
     }
-    loadIdx += 1;
-    loadIdx = loadIdx == kMaxPipe ? 0 : loadIdx;
+
+    copyIdx += 1;
+    copyIdx = copyIdx == kMaxPipe ? 0 : copyIdx;
   }
 
   Tensor mmaCRegFp16 = make_fragment_like<fp16>(mmaCReg.layout());
@@ -187,26 +214,6 @@ static __global__ void __launch_bounds__(kThreadGroupSize)
   }
   __syncthreads();
   copy(copyC, copyCSrc, copyCDst);
-
-  // int total_workers = gridDim.x * gridDim.y;
-  // int start_idx = (ctaIdx * 128 + thridx - 128) * 2;
-  // int stride = total_workers * 128 * 2;
-  // int step = 0;
-  // for (int i = start_idx; i < lnM; i += stride) {
-  //   if (step <= gemmK / 32) {
-  //     __syncthreads();
-  //   }
-  //   __half2 tmp = *reinterpret_cast<__half2 *>(&lnA_ptr[i]);
-  //   __half2 tmp2;
-  //   tmp2.x = tmp.x / (__half(1.0) + hexp(-tmp.x));
-  //   tmp2.y = tmp.y / (__half(1.0) + hexp(-tmp.y));
-  //   *reinterpret_cast<__half2 *>(&lnB_ptr[i]) = tmp2;
-  //   step++;
-  // }
-  // while (step <= gemmK / 32) {
-  //   __syncthreads();
-  //   step++;
-  // }
 }
 
 void entry_cute_parallel_gemmrc_lnr(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
@@ -214,9 +221,9 @@ void entry_cute_parallel_gemmrc_lnr(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
                                     int gemmK, fp16 *lnA_ptr, fp16 *lnB_ptr,
                                     int lnM, int lnN) {
   dim3 gridDim(gemmM / 128, gemmN / 128);
-  dim3 blockDim(kThreadGroupSize, 1, 1);
+  dim3 blockDim(128, 1, 1);
 
-  constexpr int SMEM_SIZE = 64 * 1024;
+  constexpr int SMEM_SIZE = 80 * 1024;
   cudaSafeCall(cudaFuncSetAttribute(
       parallel_kernels::kernel_cute_parallel_gemm_ln,
       cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_SIZE));

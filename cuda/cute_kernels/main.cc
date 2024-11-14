@@ -42,7 +42,9 @@ void _cutlass_parallel_gemmrc_lnr(torch::Tensor gemmA, torch::Tensor gemmB,
   int gemmM = gemmC.size(0);
   int gemmN = gemmC.size(1);
   int gemmK = gemmA.size(1);
-  assert(lnA.size(0) == gemmM);
+  assert(gemmA.size(0) == gemmM);
+  assert(gemmB.size(0) == gemmN);
+  assert(gemmB.size(1) == gemmK);
   fp16 *gemmA_ptr = reinterpret_cast<fp16 *>(gemmA.data_ptr());
   fp16 *gemmB_ptr = reinterpret_cast<fp16 *>(gemmB.data_ptr());
   fp16 *gemmC_ptr = reinterpret_cast<fp16 *>(gemmC.data_ptr());
