@@ -1,6 +1,7 @@
 import torch
 import time
 import colorama
+import argparse
 
 import acre.perf as acre
 
@@ -8,6 +9,11 @@ print(torch.__version__)
 
 
 NUM_RUNS = 64
+
+WITH_NCU = False
+
+if WITH_NCU:
+    NUM_RUNS = 2
 
 STR_DTYPE_MAPPING = {
     "fp32": torch.float32,
@@ -18,6 +24,7 @@ STR_DTYPE_MAPPING = {
     # "int4": torch.int4,
 }
 
+argparse.ArgumentParser
 
 colorama.init(autoreset=True)
 
@@ -35,6 +42,9 @@ def run_and_check(func, inputs, answers, outputs):
     for d in outputs:
         torch.zeros(d.size(), out=d)
     func(*(inputs + outputs))
+
+    if WITH_NCU:
+        return
 
     errors = []
     for i in range(length):
@@ -139,15 +149,15 @@ def test_gemm_ln(gemmM, gemmN, gemmK, lnM, lnN, dtype):
         ansfunc,
         torchfunc,
         [acrefunc],
-        [(gemmM, gemmK), (gemmN, gemmK), (lnM * 2, lnN)],
-        [(gemmM, gemmN), (lnM * 2, lnN)],
+        [(gemmM, gemmK), (gemmN, gemmK), (lnM, lnN)],
+        [(gemmM, gemmN), (lnM, lnN)],
         dtype,
     )
     print("-" * 80)
 
 
 def main():
-    test_gemm_ln(4096, 4096, 4096, 4096, 4096, "fp16")
+    test_gemm_ln(4096, 4096, 4096, 4096 * 2, 4096, "fp16")
     test_gemm(4096, 4096, 4096, "fp16")
     # test_gemm(8192, 4096, 8192, "fp16")
 

@@ -18,8 +18,8 @@ using fp16 = cute::half_t;
 
 extern __shared__ uint8_t shmem_ptr[];
 
-#define ALIGN_UP(x, size) (((x) + (size)-1) / (size) * (size))
-#define DIV_UP(x, size) (((x) + (size)-1) / (size))
+#define ALIGN_UP(x, size) (((x) + (size) - 1) / (size) * (size))
+#define DIV_UP(x, size) (((x) + (size) - 1) / (size))
 
 static __global__ void __launch_bounds__(128)
     kernel_cute_parallel_gemm_ln(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
@@ -33,7 +33,7 @@ static __global__ void __launch_bounds__(128)
   using gemmTileN = _128;
   using gemmTileK = _32;
   using gemmPipe = _4;
-  int mtileM = 8;
+  int mtileM = 16;
   int mtileSize = mtileM * gridDim.y;
   int mtileIdx = ctaIdx / mtileSize;
   int tileIdx = ctaIdx % mtileSize;
@@ -148,7 +148,7 @@ static __global__ void __launch_bounds__(128)
   ThrCopy thrcopySiluA = copySiluA.get_slice(thridx);
   Tensor copySiluASrc = thrcopySiluA.partition_S(tSiluAGmem);
   Tensor copySiluADst = thrcopySiluA.partition_D(tSiluSmem);
-  bool predcopySiluA = thridx < kSiluCopyThreads;
+  bool predcopySiluA = thridx < 32;
 
   for (int pipeIdx = 0; pipeIdx < kTileCount + kMaxPipe - 1; pipeIdx++) {
     if (pipeIdx < kTileCount) {
@@ -159,6 +159,10 @@ static __global__ void __launch_bounds__(128)
       if (predcopySiluA) {
         copy(copySiluA, copySiluASrc(_, pipeIdx), copySiluADst(_, 0, copyIdx));
       }
+    }
+    if (pipeIdx + 1 < kSiluTileCount) {
+      fp16 *addr = &copySiluASrc(_, pipeIdx + 1)[0];
+      asm volatile("prefetch.global.L2 [%0];" ::"l"(addr));
     }
     if (pipeIdx < kTileCount) {
       cp_async_fence();
@@ -175,11 +179,12 @@ static __global__ void __launch_bounds__(128)
         gemm(blockMMA, mmaAReg(_, _, blockIdx), mmaBReg(_, _, blockIdx),
              mmaCReg);
       }
-      if (pipeIdx < kMaxPipe - 1 + kSiluTileCount) {
-        __half2 val = ((__half2 *)(&tSiluSmem(_, mmaIdx)[0]))[thridx];
-        val.x = val.x / (hexp(-val.x) + __half(1));
-        val.y = val.y / (hexp(-val.y) + __half(1));
-        int jobidx = pipeIdx - kMaxPipe + 1;
+      __half2 val = ((__half2 *)(&tSiluSmem(_, mmaIdx)[0]))[thridx];
+      val.x = val.x / (hexp(-val.x) + __half(1));
+      val.y = val.y / (hexp(-val.y) + __half(1));
+      int jobidx = pipeIdx - kMaxPipe + 1;
+      // if (thridx * kTileCount == 122) {
+      if (1) {
         __stwt((__half2 *)(lnB_ptr + blockStart + jobidx * perStageWorkload) +
                    thridx,
                val);
@@ -223,7 +228,7 @@ void entry_cute_parallel_gemmrc_lnr(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
   dim3 gridDim(gemmM / 128, gemmN / 128);
   dim3 blockDim(128, 1, 1);
 
-  constexpr int SMEM_SIZE = 80 * 1024;
+  constexpr int SMEM_SIZE = (64 + 8) * 1024;
   cudaSafeCall(cudaFuncSetAttribute(
       parallel_kernels::kernel_cute_parallel_gemm_ln,
       cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_SIZE));
