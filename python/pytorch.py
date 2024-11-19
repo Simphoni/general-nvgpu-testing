@@ -135,7 +135,7 @@ def test_gemm_ln(gemmM, gemmN, gemmK, lnM, lnN, dtype):
 
     def ansfunc(a, b, c, d, e):
         torch.matmul(a, b.t(), out=d)
-        e.copy_(torch.nn.functional.silu(c))
+        e.copy_(torch.nn.functional.relu(c))
 
     def torchfunc(a, b, c, d, e):
         torch.matmul(a, b.t(), out=d)

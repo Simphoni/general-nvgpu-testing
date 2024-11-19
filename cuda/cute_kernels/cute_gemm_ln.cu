@@ -172,6 +172,15 @@ static __global__ void __launch_bounds__(128)
       __syncthreads();
       int mmaIdx = copyIdx + 1;
       mmaIdx = mmaIdx == kMaxPipe ? 0 : mmaIdx;
+      __half2 val = ((__half2 *)(&tSiluSmem(_, mmaIdx)[0]))[thridx];
+      val.x = val.x < __half(0) ? __half(0):val.x;
+      val.y = val.y < __half(0) ? __half(0):val.y;
+      int jobidx = pipeIdx - kMaxPipe + 1;
+      if (thridx < 64) {
+        __stcs((__half2 *)(lnB_ptr + blockStart + jobidx * perStageWorkload) +
+                   thridx,
+               val);
+      }
       CUTE_UNROLL
       for (int blockIdx = 0; blockIdx < kMaxBlock; blockIdx++) {
         copy(ldmA, ldmASrc(_, _, blockIdx, mmaIdx), ldmADst(_, _, blockIdx));
@@ -179,13 +188,8 @@ static __global__ void __launch_bounds__(128)
         gemm(blockMMA, mmaAReg(_, _, blockIdx), mmaBReg(_, _, blockIdx),
              mmaCReg);
       }
-      __half2 val = ((__half2 *)(&tSiluSmem(_, mmaIdx)[0]))[thridx];
-      val.x = val.x / (hexp(-val.x) + __half(1));
-      val.y = val.y / (hexp(-val.y) + __half(1));
-      int jobidx = pipeIdx - kMaxPipe + 1;
-      // if (thridx * kTileCount == 122) {
-      if (1) {
-        __stwt((__half2 *)(lnB_ptr + blockStart + jobidx * perStageWorkload) +
+      if (thridx >= 64) {
+        __stcs((__half2 *)(lnB_ptr + blockStart + jobidx * perStageWorkload) +
                    thridx,
                val);
       }
