@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
+#include <thread>
 
 #include "pybind11/pybind11.h"
 
@@ -8,26 +9,32 @@
 #include "gemm_utils.h"
 #include "torch_utils.h"
 
-namespace ch = std::chrono;
-
 double test_pipeline(std::function<void()> func, const std::string &name,
                      int repeat = -1) {
+  constexpr int sleep_ms = 100;
   if (repeat == -1) {
     repeat = get_default_nrep();
   }
-  fprintf(stderr, "%s: test pipeline running: nrep=%d\n", name.data(), repeat);
+  fprintf(stderr,
+          "%s: test pipeline running: warmup=%d, sleep=%d ms, nrep=%d\n",
+          name.data(), repeat, sleep_ms, repeat);
   for (int i = 0; i < repeat; i++) {
     func();
   }
   cudaSafeCall(cudaDeviceSynchronize());
-  auto tic = ch::high_resolution_clock::now();
+  std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+  cudaEvent_t tic, toc;
+  cudaSafeCall(cudaEventCreate(&tic));
+  cudaSafeCall(cudaEventCreate(&toc));
+  cudaSafeCall(cudaEventRecord(tic));
   for (int i = 0; i < repeat; i++) {
     func();
   }
-  cudaSafeCall(cudaDeviceSynchronize());
-  auto toc = ch::high_resolution_clock::now();
-  double duration =
-      ch::duration_cast<ch::microseconds>(toc - tic).count() / 1000.0 / repeat;
+  cudaSafeCall(cudaEventRecord(toc));
+  cudaSafeCall(cudaEventSynchronize(toc));
+  float time;
+  cudaSafeCall(cudaEventElapsedTime(&time, tic, toc));
+  double duration = time / repeat;
   fprintf(stderr, "%s: %lf ms\n", name.data(), duration);
   return duration;
 }
@@ -120,7 +127,7 @@ void _cublas_gemmex_nt_compf32(at::Tensor a, at::Tensor b, at::Tensor c) {
                      std::string(a.dtype().name()) + "," +
                      std::string(b.dtype().name()) + "," +
                      std::string(c.dtype().name()) + "}";
-  test_pipeline(
+  double latency = test_pipeline(
       [&]() {
         float alpha = 1.0f, beta = 0.0f;
         cublasSafeCall(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
@@ -129,6 +136,8 @@ void _cublas_gemmex_nt_compf32(at::Tensor a, at::Tensor b, at::Tensor c) {
       },
       name);
   cublasSafeCall(cublasDestroy(handle));
+  double tflops = get_tflops(m, n, k, latency);
+  printf("%s: %.2f TFLOPS\n", name.data(), tflops);
 }
 
 void register_cublas(pybind11::module &mod_perf, pybind11::module &mod_run) {

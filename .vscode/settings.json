@@ -4,9 +4,6 @@
     },
     "clangd.arguments": [
         "--compile-commands-dir=${workspaceFolder}/build",
-        "-j=8",
-        "--background-index",
-        "--pch-storage=memory",
         "--header-insertion=never",
         "--limit-references=100",
         "--limit-results=20",

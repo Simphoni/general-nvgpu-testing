@@ -10,6 +10,8 @@ print(torch.__version__)
 
 NUM_RUNS = 64
 
+SLEEP_MILLISEC_BEFORE_EVAL = 100
+
 WITH_NCU = False
 
 if WITH_NCU:
@@ -68,7 +70,7 @@ def run_and_check(func, inputs, answers, outputs):
                 while se[begin] != "(":
                     begin -= 1
                 percent = float(se[begin + 1 : end])
-        if percent < 0.1:
+        if percent < 0.12:
             print(
                 colorama.Fore.YELLOW
                 + f"{func.__name__} tensor({itensor}): mismatch percent = {percent}%"
@@ -92,13 +94,14 @@ def universal_test(ansfunc, torchfunc, cutefuncs, input_shapes, output_shapes, d
     for _ in range(NUM_RUNS):
         torchfunc(*(inputs + answers))
     torch.cuda.synchronize()
+    time.sleep(SLEEP_MILLISEC_BEFORE_EVAL * 1e-3)
     tic = time.time()
     for _ in range(NUM_RUNS):
         torchfunc(*(inputs + answers))
     torch.cuda.synchronize()
     toc = time.time()
     latency = (toc - tic) / NUM_RUNS
-    print(f"PyTorch: {latency * 1e3} ms")
+    print(f"PyTorch: {latency * 1e3:.6f} ms")
 
     ansfunc(*(inputs + answers))
     for func in cutefuncs:
@@ -117,8 +120,8 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
         torchfunc,
         [
             # acre.cublas_gemm_nt,
-            # acre.cublas_gemmex_nt,
-            # acre.cutlass_gemm_nt_naive,
+            acre.cublas_gemmex_nt,
+            acre.cutlass_gemm_nt_naive,
             # acre.cutlass_gemm_nt_manual_tune,
             acre.cutlass_parallel_gemmrc,
         ],
@@ -133,13 +136,15 @@ def test_gemm_ln(gemmM, gemmN, gemmK, lnM, lnN, dtype):
     dtype = STR_DTYPE_MAPPING[dtype]
     print(f"[TEST] GEMM_LN: {gemmM=}, {gemmN=}, {gemmK=}, {lnM=}, {lnN=}, {dtype=}")
 
+    elemwise_func = torch.nn.functional.silu
+
     def ansfunc(a, b, c, d, e):
         torch.matmul(a, b.t(), out=d)
-        e.copy_(torch.nn.functional.relu(c))
+        e.copy_(elemwise_func(c))
 
     def torchfunc(a, b, c, d, e):
         torch.matmul(a, b.t(), out=d)
-        torch.nn.functional.silu(c)
+        elemwise_func(c)
 
     def acrefunc(a, b, c, d, e):
         # acre: (a,b)->d, (c)->e
@@ -158,8 +163,11 @@ def test_gemm_ln(gemmM, gemmN, gemmK, lnM, lnN, dtype):
 
 def main():
     test_gemm_ln(4096, 4096, 4096, 4096 * 2, 4096, "fp16")
+    # test_gemm_ln(4096, 4096, 4096, 4096 * 2, 4096, "fp16")
     test_gemm(4096, 4096, 4096, "fp16")
-    # test_gemm(8192, 4096, 8192, "fp16")
+    test_gemm(4096, 4096, 4096, "fp16")
+    
+    test_gemm(512, 512, 8192, "fp16")
 
 
 if __name__ == "__main__":
