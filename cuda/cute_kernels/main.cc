@@ -11,8 +11,8 @@ using fp16 = cute::half_t;
 namespace parallel_kernels {
 
 void entry_cute_parallel_gemmrc(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
-                                fp16 *gemmC_ptr, int gemmM, int gemmN,
-                                int gemmK);
+                                     fp16 *gemmC_ptr, int gemmM, int gemmN,
+                                     int gemmK);
 void entry_cute_parallel_gemmrc_lnr(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
                                     fp16 *gemmC_ptr, int gemmM, int gemmN,
                                     int gemmK, fp16 *lnA_ptr, fp16 *lnB_ptr,
@@ -24,7 +24,7 @@ double test_pipeline(std::function<void()> func, const std::string &name,
                      int repeat = -1);
 
 void _cutlass_parallel_gemmrc(torch::Tensor gemmA, torch::Tensor gemmB,
-                              torch::Tensor gemmC) {
+                                   torch::Tensor gemmC) {
   // for gemmrc, A[m,k], B[n,k], C[m,n], (LayoutRight)
   int gemmM = gemmC.size(0);
   int gemmN = gemmC.size(1);
@@ -32,8 +32,8 @@ void _cutlass_parallel_gemmrc(torch::Tensor gemmA, torch::Tensor gemmB,
   fp16 *gemmA_ptr = reinterpret_cast<fp16 *>(gemmA.data_ptr());
   fp16 *gemmB_ptr = reinterpret_cast<fp16 *>(gemmB.data_ptr());
   fp16 *gemmC_ptr = reinterpret_cast<fp16 *>(gemmC.data_ptr());
-  parallel_kernels::entry_cute_parallel_gemmrc(gemmA_ptr, gemmB_ptr, gemmC_ptr,
-                                               gemmM, gemmN, gemmK);
+  parallel_kernels::entry_cute_parallel_gemmrc(
+      gemmA_ptr, gemmB_ptr, gemmC_ptr, gemmM, gemmN, gemmK);
 }
 
 void _cutlass_parallel_gemmrc_lnr(torch::Tensor gemmA, torch::Tensor gemmB,
@@ -59,7 +59,7 @@ void _cutlass_parallel_gemmrc_lnr(torch::Tensor gemmA, torch::Tensor gemmB,
       lnM, lnN);
 }
 
-void register_cute_kernels(pybind11::module &m) {
-  m.def("cutlass_parallel_gemmrc", &_cutlass_parallel_gemmrc);
-  m.def("cutlass_parallel_gemmrc_lnr", &_cutlass_parallel_gemmrc_lnr);
+void register_cute_kernels(pybind11::module &mod) {
+  mod.def("cutlass_parallel_gemmrc_lnr", &_cutlass_parallel_gemmrc_lnr);
+  mod.def("cutlass_parallel_gemmrc", &_cutlass_parallel_gemmrc);
 }

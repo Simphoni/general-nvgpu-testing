@@ -8,7 +8,7 @@
 double test_pipeline(std::function<void()> func, const std::string &name,
                      int repeat = -1);
 
-void _cutlass_gemm_nt_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
+void _cutlass_gemmrc_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkTensor(a);
   checkTensor(b);
   checkTensor(c);
@@ -19,10 +19,6 @@ void _cutlass_gemm_nt_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkIntEqual(a.size(1), b.size(1));
   checkIntEqual(m, c.size(0));
   checkIntEqual(n, c.size(1));
-  std::string name = std::string("cutlass::gemm_nt_manual_tune_{comp=fp32,") +
-                     std::string(a.dtype().name()) + "," +
-                     std::string(b.dtype().name()) + "," +
-                     std::string(c.dtype().name()) + "}";
 
   using Half = cutlass::half_t;
   using RowMajor = cutlass::layout::RowMajor;
@@ -59,18 +55,21 @@ void _cutlass_gemm_nt_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
                              {alpha, beta}, split_k_slices);
   gemmKernel gemm_op;
   size_t workspace_size = gemmKernel::get_workspace_size(args);
-  printf("%s: workspace size: %lu\n", name.c_str(), workspace_size);
+  if (workspace_size) {
+    fprintf(stderr, "%s: workspace size: %lu\n", __PRETTY_FUNCTION__,
+            workspace_size);
+    return;
+  }
   assert(workspace_size == 0);
 
   if (tensorTypeIs<at::Half>(a) && tensorTypeIs<at::Half>(b) &&
       tensorTypeIs<at::Half>(c)) {
-    double latency = test_pipeline([&]() { gemm_op(args); }, name);
-    fprintf(stderr, "---> TFLOPS: %.4f\n", get_tflops(m, n, k, latency));
+    gemm_op(args);
   } else {
     fprintf(stderr, "unsupported data type\n");
   }
 }
 
-void register_cutlass_manual(pybind11::module &mod_perf, pybind11::module &mod_run) {
-  mod_perf.def("cutlass_gemm_nt_manual_tune", &_cutlass_gemm_nt_manual_tune);
-} 
+void register_cutlass_manual(pybind11::module &mod) {
+  mod.def("cutlass_gemmrc_manual_tune", &_cutlass_gemmrc_manual_tune);
+}

@@ -7,6 +7,7 @@ CompileFlags:
     - -I/usr/include/python3.10
     - -xcuda
     - --cuda-gpu-arch=sm_80
+    - -std=c++20
   Remove:
     - -forward-unknown-to-host-compiler
     - -gencode

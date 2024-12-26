@@ -12,7 +12,7 @@
 double test_pipeline(std::function<void()> func, const std::string &name,
                      int repeat = -1);
 
-void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
+void _cutlass_gemmrc(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkTensor(a);
   checkTensor(b);
   checkTensor(c);
@@ -23,10 +23,6 @@ void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkIntEqual(a.size(1), b.size(1));
   checkIntEqual(m, c.size(0));
   checkIntEqual(n, c.size(1));
-  std::string name = std::string("cutlass::gemm_nt_{comp=fp32,") +
-                     std::string(a.dtype().name()) + "," +
-                     std::string(b.dtype().name()) + "," +
-                     std::string(c.dtype().name()) + "}";
 
   using Half = cutlass::half_t;
   using RowMajor = cutlass::layout::RowMajor;
@@ -41,11 +37,6 @@ void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
 
   float alpha = 1.0;
   float beta = 0.0;
-  // using TensorRef = cutlass::TensorRef<Half, RowMajor>;
-  // gemmKernel::Arguments args(
-  //     cutlass::gemm::GemmCoord(m, n, k), TensorRef(A, RowMajor(k)),
-  //     TensorRef(B, RowMajor(k)), TensorRef(C, RowMajor(n)),
-  //     TensorRef(C, RowMajor(n)));
 
   gemmKernel::Arguments args({m, n, k}, {A, k}, {B, k}, {C, n}, {C, n},
                              {alpha, beta});
@@ -53,19 +44,18 @@ void _cutlass_gemm_nt_naive(at::Tensor a, at::Tensor b, at::Tensor c) {
 
   cutlass::Status status = gemm_op.can_implement(args);
   if (status != cutlass::Status::kSuccess) {
-    fprintf(stderr, "%s: failed to initialize gemm op\n", name.c_str());
+    fprintf(stderr, "%s: failed to initialize gemm op\n", __PRETTY_FUNCTION__);
     return;
   }
 
   if (tensorTypeIs<at::Half>(a) && tensorTypeIs<at::Half>(b) &&
       tensorTypeIs<at::Half>(c)) {
-    double latency = test_pipeline([&]() { gemm_op(args); }, name);
-    fprintf(stderr, "---> TFLOPS: %.4f\n", get_tflops(m, n, k, latency));
+    gemm_op(args);
   } else {
     fprintf(stderr, "unsupported data type\n");
   }
 }
 
-void register_cutlass(pybind11::module &mod_perf, pybind11::module &mod_run) {
-  mod_perf.def("cutlass_gemm_nt_naive", &_cutlass_gemm_nt_naive);
+void register_cutlass(pybind11::module &mod) {
+  mod.def("cutlass_gemmrc_naive", &_cutlass_gemmrc);
 }

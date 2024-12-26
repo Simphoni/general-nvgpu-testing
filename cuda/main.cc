@@ -17,11 +17,21 @@ void log_cutlass_version() {
           cutlass::getVersionMinor(), cutlass::getVersionPatch());
 }
 
-void register_cublas(pybind11::module &mod_perf, pybind11::module &mod_run);
-void register_cutlass(pybind11::module &mod_perf, pybind11::module &mod_run);
-void register_cutlass_manual(pybind11::module &mod_perf,
-                             pybind11::module &mod_run);
-void register_cute_kernels(pybind11::module &m);
+cublasHandle_t get_cublas_handle() {
+  static cublasHandle_t handle;
+  static bool init = false;
+  if (!init) {
+    init = true;
+    cublasSafeCall(cublasCreate(&handle));
+    return handle;
+  }
+  return handle;
+}
+
+void register_cublas(pybind11::module &mod);
+void register_cutlass(pybind11::module &mod);
+void register_cutlass_manual(pybind11::module &mod);
+void register_cute_kernels(pybind11::module &mod);
 
 namespace {
 
@@ -42,13 +52,11 @@ int get_default_nrep() { return default_nrep; }
 PYBIND11_MODULE(INTERFACE_NAME, m) {
   log_cublas_version();
   log_cutlass_version();
-  // make submodule "perf"
-  pybind11::module m_perf = m.def_submodule("perf");
-  // make submodule "run"
-  pybind11::module m_run = m.def_submodule("run");
-  register_cublas(m_perf, m_run);
-  register_cutlass(m_perf, m_run);
-  register_cutlass_manual(m_perf, m_run);
-  register_cute_kernels(m_perf);
-  m_perf.def("set_default_nrep", &set_default_nrep);
+  get_cublas_handle();
+  // pybind11::module m_perf = m.def_submodule("perf");
+  // m_perf.def("set_default_nrep", &set_default_nrep);
+  register_cublas(m);
+  register_cutlass(m);
+  register_cutlass_manual(m);
+  register_cute_kernels(m);
 }

@@ -39,7 +39,9 @@ double test_pipeline(std::function<void()> func, const std::string &name,
   return duration;
 }
 
-void _cublas_gemm_nt(at::Tensor a, at::Tensor b, at::Tensor c) {
+cublasHandle_t get_cublas_handle();
+
+void _cublas_hgemm_rc(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkTensor(a);
   checkTensor(b);
   checkTensor(c);
@@ -51,30 +53,21 @@ void _cublas_gemm_nt(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkIntEqual(m, c.size(0));
   checkIntEqual(n, c.size(1));
 
-  cublasHandle_t handle;
-  cublasSafeCall(cublasCreate(&handle));
+  cublasHandle_t handle = get_cublas_handle();
   __half *A = (__half *)a.data_ptr();
   __half *B = (__half *)b.data_ptr();
   __half *C = (__half *)c.data_ptr();
 
-  std::string name =
-      std::string("cublas::Hgemm_nt_{") + std::string(a.dtype().name()) + "," +
-      std::string(b.dtype().name()) + "," + std::string(c.dtype().name()) + "}";
-
   if (tensorTypeIs<at::Half>(a) && tensorTypeIs<at::Half>(b) &&
       tensorTypeIs<at::Half>(c)) {
-    test_pipeline(
-        [&]() {
-          const __half alpha = __float2half(1.0);
-          const __half beta = __float2half(0.0);
-          cublasSafeCall(cublasHgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
-                                     &alpha, B, k, A, k, &beta, C, n));
-        },
-        name);
+    const __half alpha = __float2half(1.0);
+    const __half beta = __float2half(0.0);
+    cublasSafeCall(cublasHgemm(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
+                               &alpha, B, k, A, k, &beta, C, n));
+
   } else {
     fprintf(stderr, "unsupported data type\n");
   }
-  cublasSafeCall(cublasDestroy(handle));
 }
 
 inline cudaDataType get_cuda_data_type(at::ScalarType type) {
@@ -97,7 +90,7 @@ inline cudaDataType get_tensor_data_type(at::Tensor a) {
   return get_cuda_data_type(a.scalar_type());
 }
 
-void _cublas_gemmex_nt_compf32(at::Tensor a, at::Tensor b, at::Tensor c) {
+void _cublas_gemmex_rc_compf32(at::Tensor a, at::Tensor b, at::Tensor c) {
   checkTensor(a);
   checkTensor(b);
   checkTensor(c);
@@ -121,27 +114,14 @@ void _cublas_gemmex_nt_compf32(at::Tensor a, at::Tensor b, at::Tensor c) {
   void *B = b.data_ptr();
   void *C = c.data_ptr();
 
-  cublasHandle_t handle;
-  cublasSafeCall(cublasCreate(&handle));
-  std::string name = std::string("cublas::GemmEx_nt_compf32_{") +
-                     std::string(a.dtype().name()) + "," +
-                     std::string(b.dtype().name()) + "," +
-                     std::string(c.dtype().name()) + "}";
-  double latency = test_pipeline(
-      [&]() {
-        float alpha = 1.0f, beta = 0.0f;
-        cublasSafeCall(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k,
-                                    &alpha, B, BType, k, A, AType, k, &beta, C,
-                                    CType, n, CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
-      },
-      name);
-  cublasSafeCall(cublasDestroy(handle));
-  double tflops = get_tflops(m, n, k, latency);
-  printf("%s: %.2f TFLOPS\n", name.data(), tflops);
+  cublasHandle_t handle = get_cublas_handle();
+  float alpha = 1.0f, beta = 0.0f;
+  cublasSafeCall(cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, n, m, k, &alpha,
+                              B, BType, k, A, AType, k, &beta, C, CType, n,
+                              CUDA_R_32F, CUBLAS_GEMM_DEFAULT));
 }
 
-void register_cublas(pybind11::module &mod_perf, pybind11::module &mod_run) {
-  mod_perf.def("cublas_gemm_nt", &_cublas_gemm_nt, "cublas_gemm_nt");
-  mod_perf.def("cublas_gemmex_nt", &_cublas_gemmex_nt_compf32,
-               "cublas_gemmex_nt");
+void register_cublas(pybind11::module &mod) {
+  mod.def("cublas_hgemmrc", &_cublas_hgemm_rc);
+  mod.def("cublas_gemmexrc", &_cublas_gemmex_rc_compf32);
 }

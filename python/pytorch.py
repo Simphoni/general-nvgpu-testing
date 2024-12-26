@@ -2,8 +2,10 @@ import torch
 import time
 import colorama
 import argparse
+from functools import partial
+import triton
 
-import acre.perf as acre
+import acre
 
 print(torch.__version__)
 
@@ -26,12 +28,11 @@ STR_DTYPE_MAPPING = {
     # "int4": torch.int4,
 }
 
-argparse.ArgumentParser
 
 colorama.init(autoreset=True)
 
 
-def run_and_check(func, inputs, answers, outputs):
+def check(func, answers, outputs):
     assert len(outputs) == len(answers), f"{len(outputs)=} != {len(answers)=}"
     length = len(outputs)
     for i in range(length):
@@ -41,9 +42,6 @@ def run_and_check(func, inputs, answers, outputs):
         assert (
             outputs[i].shape == answers[i].shape
         ), f"{i=}, {outputs[i].shape=}, {answers[i].shape=}"
-    for d in outputs:
-        torch.zeros(d.size(), out=d)
-    func(*(inputs + outputs))
 
     if WITH_NCU:
         return
@@ -59,7 +57,6 @@ def run_and_check(func, inputs, answers, outputs):
     if len(errors) == 0:
         print(colorama.Fore.GREEN + f"{func.__name__} success")
         return
-    print("v" * 40)
     for itensor, err in errors:
         se = str(err)
         percent = 100
@@ -79,10 +76,26 @@ def run_and_check(func, inputs, answers, outputs):
             print(answers[itensor])
             print(outputs[itensor])
             print(colorama.Fore.RED + f"{func.__name__} tensor({itensor}): {err}")
-    print("^" * 40)
 
 
-def universal_test(ansfunc, torchfunc, cutefuncs, input_shapes, output_shapes, dtype):
+def run_perf(func, inputs, outputs):
+    return triton.testing.do_bench(lambda: func(*(inputs + outputs)), warmup=50, rep=200) * 1e-3
+    # for _ in range(NUM_RUNS):
+    #     func(*(inputs + outputs))
+    # torch.cuda.synchronize()
+    # time.sleep(SLEEP_MILLISEC_BEFORE_EVAL * 1e-3)
+    # tic = time.time()
+    # for _ in range(NUM_RUNS):
+    #     func(*(inputs + outputs))
+    # torch.cuda.synchronize()
+    # toc = time.time()
+    # latency = (toc - tic) / NUM_RUNS
+    # return latency
+
+
+def universal_test(
+    ansfunc, torchfunc, cutefuncs, input_shapes, output_shapes, dtype, metric
+):
     inputs = [torch.randn(shape, dtype=dtype, device="cuda") for shape in input_shapes]
     outputs = [
         torch.zeros(shape, dtype=dtype, device="cuda") for shape in output_shapes
@@ -91,21 +104,19 @@ def universal_test(ansfunc, torchfunc, cutefuncs, input_shapes, output_shapes, d
         torch.zeros(shape, dtype=dtype, device="cuda") for shape in output_shapes
     ]
 
-    for _ in range(NUM_RUNS):
-        torchfunc(*(inputs + answers))
-    torch.cuda.synchronize()
-    time.sleep(SLEEP_MILLISEC_BEFORE_EVAL * 1e-3)
-    tic = time.time()
-    for _ in range(NUM_RUNS):
-        torchfunc(*(inputs + answers))
-    torch.cuda.synchronize()
-    toc = time.time()
-    latency = (toc - tic) / NUM_RUNS
-    print(f"PyTorch: {latency * 1e3:.6f} ms")
-
     ansfunc(*(inputs + answers))
+
+    latency = run_perf(torchfunc, inputs, outputs)
+    print(f"PyTorch: {latency * 1e3:.6f} ms, [{metric(latency=latency):.3f}] TFLOPS")
+
     for func in cutefuncs:
-        run_and_check(func, inputs, answers, outputs)
+        for d in outputs:
+            d.zero_()
+        latency = run_perf(func, inputs, outputs)
+        print(
+            f"{func.__name__}: {latency * 1e3:.6f} ms, [{metric(latency=latency):.3f}] TFLOPS"
+        )
+        check(func, answers, outputs)
 
 
 def test_gemm(m: int, n: int, k: int, dtype: str):
@@ -115,59 +126,32 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
     def torchfunc(a, b, c):
         torch.matmul(a, b.t(), out=c)
 
+    def compute_flops(m, n, k, latency):
+        return 2 * m * n * k / latency * 1e-12
+
     universal_test(
         torchfunc,
         torchfunc,
         [
-            # acre.cublas_gemm_nt,
-            acre.cublas_gemmex_nt,
-            acre.cutlass_gemm_nt_naive,
-            # acre.cutlass_gemm_nt_manual_tune,
             acre.cutlass_parallel_gemmrc,
+            # acre.cublas_hgemmrc,
+            acre.cublas_gemmexrc,
+            acre.cutlass_gemmrc_naive,
+            acre.cutlass_gemmrc_manual_tune,
         ],
         [(m, k), (n, k)],
         [(m, n)],
         dtype,
-    )
-    print("-" * 80)
-
-
-def test_gemm_ln(gemmM, gemmN, gemmK, lnM, lnN, dtype):
-    dtype = STR_DTYPE_MAPPING[dtype]
-    print(f"[TEST] GEMM_LN: {gemmM=}, {gemmN=}, {gemmK=}, {lnM=}, {lnN=}, {dtype=}")
-
-    elemwise_func = torch.nn.functional.silu
-
-    def ansfunc(a, b, c, d, e):
-        torch.matmul(a, b.t(), out=d)
-        e.copy_(elemwise_func(c))
-
-    def torchfunc(a, b, c, d, e):
-        torch.matmul(a, b.t(), out=d)
-        elemwise_func(c)
-
-    def acrefunc(a, b, c, d, e):
-        # acre: (a,b)->d, (c)->e
-        acre.cutlass_parallel_gemmrc_lnr(a, b, d, c, e)
-
-    universal_test(
-        ansfunc,
-        torchfunc,
-        [acrefunc],
-        [(gemmM, gemmK), (gemmN, gemmK), (lnM, lnN)],
-        [(gemmM, gemmN), (lnM, lnN)],
-        dtype,
+        partial(compute_flops, m, n, k),
     )
     print("-" * 80)
 
 
 def main():
-    test_gemm_ln(4096, 4096, 4096, 4096 * 2, 4096, "fp16")
-    # test_gemm_ln(4096, 4096, 4096, 4096 * 2, 4096, "fp16")
     test_gemm(4096, 4096, 4096, "fp16")
     test_gemm(4096, 4096, 4096, "fp16")
-    
-    test_gemm(512, 512, 8192, "fp16")
+
+    # test_gemm(512, 512, 8192, "fp16")
 
 
 if __name__ == "__main__":
@@ -175,5 +159,5 @@ if __name__ == "__main__":
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.autograd.set_grad_enabled(False)
     print(f"Device: {torch.cuda.get_device_name()}")
-    acre.set_default_nrep(NUM_RUNS)
+    # acre.set_default_nrep(NUM_RUNS)
     main()

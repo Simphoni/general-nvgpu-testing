@@ -34,7 +34,7 @@ find_package(pybind11 REQUIRED)
 # libtorch_python is for pybind interface
 append_torchlib_if_found(torch_python)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -Wall -UNDEBUG -O2")
 
@@ -62,6 +62,7 @@ add_library(acre SHARED ${ACRE_SOURCES})
 set_target_properties(acre PROPERTIES PREFIX "" SUFFIX ${Python3_EXTENSION_SUFFIX})
 target_include_directories(acre PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(acre PUBLIC ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/include ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/tools/util/include)
+target_include_directories(acre PUBLIC ${CMAKE_SOURCE_DIR}/3rdparty/ThunderKittens/include)
 target_compile_definitions(acre PUBLIC INTERFACE_NAME=acre)
 target_link_libraries(acre ${TORCH_LIBRARIES} pybind11::module)
 

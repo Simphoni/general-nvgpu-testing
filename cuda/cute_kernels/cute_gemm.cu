@@ -204,16 +204,8 @@ void entry_cute_parallel_gemmrc(fp16 *gemmA_ptr, fp16 *gemmB_ptr,
   cudaSafeCall(cudaFuncSetAttribute(parallel_kernels::kernel_cute_parallel_gemm,
                                     cudaFuncAttributeMaxDynamicSharedMemorySize,
                                     SMEM_SIZE));
-  std::string name = "cutlass_parallel_gemmrc";
-  double latency = test_pipeline(
-      [&]() {
-        parallel_kernels::
-            kernel_cute_parallel_gemm<<<gridDim, blockDim, SMEM_SIZE>>>(
-                gemmA_ptr, gemmB_ptr, gemmC_ptr, gemmM, gemmN, gemmK);
-      },
-      name);
-  double tflops = get_tflops(gemmM, gemmN, gemmK, latency);
-  printf("%s: %.2f TFLOPS\n", name.data(), tflops);
+  parallel_kernels::kernel_cute_parallel_gemm<<<gridDim, blockDim, SMEM_SIZE>>>(
+      gemmA_ptr, gemmB_ptr, gemmC_ptr, gemmM, gemmN, gemmK);
 }
 
 } // namespace parallel_kernels
