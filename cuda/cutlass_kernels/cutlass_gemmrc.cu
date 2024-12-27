@@ -1,29 +1,45 @@
-#include "cutlass/epilogue/thread/activation.h"
-#include "cutlass/epilogue/thread/scale_type.h"
+#include <functional>
+
+#include "cutlass/cutlass.h"
 #include "cutlass/gemm/device/gemm.h"
+#include "cutlass/gemm/device/gemm_universal.h"
+#include "cutlass/version.h"
+#include "pybind11/pybind11.h"
 
 #include "gemm_utils.h"
-#include "torch_utils.h"
 
 double test_pipeline(std::function<void()> func, const std::string &name,
                      int repeat = -1);
 
-void _cutlass_gemmrc_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
-  checkTensor(a);
-  checkTensor(b);
-  checkTensor(c);
+namespace cutlass_kernels {
 
-  int m = a.size(0);
-  int n = b.size(0);
-  int k = a.size(1);
-  checkIntEqual(a.size(1), b.size(1));
-  checkIntEqual(m, c.size(0));
-  checkIntEqual(n, c.size(1));
+using fp16 = cutlass::half_t;
+using RowMajor = cutlass::layout::RowMajor;
+using ColumnMajor = cutlass::layout::ColumnMajor;
 
-  using Half = cutlass::half_t;
-  using RowMajor = cutlass::layout::RowMajor;
-  using ColumnMajor = cutlass::layout::ColumnMajor;
+void entry_cutlass_gemmrc(fp16 *A, fp16 *B, fp16 *C, int m, int n, int k) {
+  using gemmKernel = cutlass::gemm::device::Gemm<
+      fp16, RowMajor, fp16, ColumnMajor, fp16, RowMajor, float,
+      cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80>;
 
+  float alpha = 1.0;
+  float beta = 0.0;
+
+  gemmKernel::Arguments args({m, n, k}, {A, k}, {B, k}, {C, n}, {C, n},
+                             {alpha, beta});
+  gemmKernel gemm_op;
+
+  cutlass::Status status = gemm_op.can_implement(args);
+  if (status != cutlass::Status::kSuccess) {
+    fprintf(stderr, "%s: failed to initialize gemm op\n", __PRETTY_FUNCTION__);
+    return;
+  }
+
+  gemm_op(args);
+}
+
+void entry_cutlass_gemmrc_spec(fp16 *A, fp16 *B, fp16 *C, int m, int n,
+                                int k) {
   using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<128, 256, 32>;
   using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 32>;
   // using ShapeMMAOp = cutlass::gemm::GemmShape<8, 8, 4>; // this is for SM_70
@@ -31,21 +47,17 @@ void _cutlass_gemmrc_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
   using SwizzleThreadBlock =
       cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<8>;
   using Epilogue = cutlass::epilogue::thread::LinearCombination<
-      Half, 128 / (8 * sizeof(Half)), float, float,
+      fp16, 128 / (8 * sizeof(fp16)), float, float,
       cutlass::epilogue::thread::ScaleType::Nothing>;
   // using Epilogue = cutlass::epilogue::thread::Identity<Half>;
   constexpr int numStages = 4;
 
   using gemmKernel = cutlass::gemm::device::Gemm<
-      Half, RowMajor, Half, ColumnMajor, Half, RowMajor, float,
+      fp16, RowMajor, fp16, ColumnMajor, fp16, RowMajor, float,
       cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
       // fine-grain shape config
       ShapeMMAThreadBlock, ShapeMMAWarp, ShapeMMAOp, Epilogue,
       SwizzleThreadBlock, numStages>;
-
-  Half *A = (Half *)a.data_ptr();
-  Half *B = (Half *)b.data_ptr();
-  Half *C = (Half *)c.data_ptr();
 
   float alpha(1.0);
   float beta(0.0);
@@ -60,16 +72,7 @@ void _cutlass_gemmrc_manual_tune(at::Tensor a, at::Tensor b, at::Tensor c) {
             workspace_size);
     return;
   }
-  assert(workspace_size == 0);
-
-  if (tensorTypeIs<at::Half>(a) && tensorTypeIs<at::Half>(b) &&
-      tensorTypeIs<at::Half>(c)) {
-    gemm_op(args);
-  } else {
-    fprintf(stderr, "unsupported data type\n");
-  }
+  gemm_op(args);
 }
 
-void register_cutlass_manual(pybind11::module &mod) {
-  mod.def("cutlass_gemmrc_manual_tune", &_cutlass_gemmrc_manual_tune);
-}
+} // namespace cutlass_kernels

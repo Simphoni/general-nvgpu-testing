@@ -30,7 +30,6 @@ cublasHandle_t get_cublas_handle() {
 
 void register_cublas(pybind11::module &mod);
 void register_cutlass(pybind11::module &mod);
-void register_cutlass_manual(pybind11::module &mod);
 void register_cute_kernels(pybind11::module &mod);
 
 namespace {
@@ -57,6 +56,5 @@ PYBIND11_MODULE(INTERFACE_NAME, m) {
   // m_perf.def("set_default_nrep", &set_default_nrep);
   register_cublas(m);
   register_cutlass(m);
-  register_cutlass_manual(m);
   register_cute_kernels(m);
 }

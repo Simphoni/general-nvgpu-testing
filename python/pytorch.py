@@ -73,13 +73,13 @@ def check(func, answers, outputs):
                 + f"{func.__name__} tensor({itensor}): mismatch percent = {percent}%"
             )
         else:
-            print(answers[itensor])
-            print(outputs[itensor])
+            print(f"{answers[itensor]=}")
+            print(f"{outputs[itensor]=}")
             print(colorama.Fore.RED + f"{func.__name__} tensor({itensor}): {err}")
 
 
 def run_perf(func, inputs, outputs):
-    return triton.testing.do_bench(lambda: func(*(inputs + outputs)), warmup=50, rep=200) * 1e-3
+    return triton.testing.do_bench(lambda: func(*(inputs + outputs)), warmup=50, rep=100) * 1e-3
     # for _ in range(NUM_RUNS):
     #     func(*(inputs + outputs))
     # torch.cuda.synchronize()
@@ -135,9 +135,10 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
         [
             acre.cutlass_parallel_gemmrc,
             # acre.cublas_hgemmrc,
-            acre.cublas_gemmexrc,
-            acre.cutlass_gemmrc_naive,
-            acre.cutlass_gemmrc_manual_tune,
+            # acre.cublas_gemmexrc,
+            # acre.cutlass_gemmrc_naive,
+            # acre.cutlass_gemmrc_spec,
+            acre.cutlass_gemmrc_splitk,
         ],
         [(m, k), (n, k)],
         [(m, n)],
@@ -149,9 +150,9 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
 
 def main():
     test_gemm(4096, 4096, 4096, "fp16")
-    test_gemm(4096, 4096, 4096, "fp16")
+    # test_gemm(4096, 4096, 4096, "fp16")
 
-    # test_gemm(512, 512, 8192, "fp16")
+    test_gemm(512, 512, 8192, "fp16")
 
 
 if __name__ == "__main__":

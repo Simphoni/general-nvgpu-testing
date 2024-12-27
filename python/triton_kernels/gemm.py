@@ -105,9 +105,9 @@ def benchmark_matmul(M, N, K, provider):
     b = torch.randn((K, N), device='cuda', dtype=torch.float16)
     
     if provider == "triton":
-        ms = triton.testing.do_bench(lambda: matmul(a, b))
+        ms = triton.testing.do_bench(lambda: matmul(a, b), warmup=50, rep=100)
     elif provider == "torch":
-        ms = triton.testing.do_bench(lambda: torch.matmul(a, b))
+        ms = triton.testing.do_bench(lambda: torch.matmul(a, b), warmup=50, rep=100)
     
     return M * N * K * 2 / 1e12 / (ms * 1e-3)
 
@@ -117,7 +117,7 @@ def main():
     providers = ['triton', 'torch']
     
     # Test different matrix shapes
-    for shape_type in ['square', 'tall', 'wide']:
+    for shape_type in ['square']:
         perf_results = {provider: [] for provider in providers}
         
         for size in sizes:
@@ -132,6 +132,7 @@ def main():
                 perf = benchmark_matmul(M, N, K, provider)
                 perf_results[provider].append(perf)
         
+        print(perf_results)
         # Create performance plot
         plt.figure(figsize=(10, 6))
         for provider in providers:
