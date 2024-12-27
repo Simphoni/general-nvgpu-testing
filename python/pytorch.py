@@ -5,7 +5,12 @@ import argparse
 from functools import partial
 import triton
 
+import matplotlib.pyplot as plt
+import numpy as np
+
 import acre
+
+plt.rcParams["font.family"] = "DejaVu Sans"
 
 print(torch.__version__)
 
@@ -33,6 +38,7 @@ colorama.init(autoreset=True)
 
 
 def check(func, answers, outputs):
+    name = getattr(func, "__name__", "unknown")
     assert len(outputs) == len(answers), f"{len(outputs)=} != {len(answers)=}"
     length = len(outputs)
     for i in range(length):
@@ -55,7 +61,7 @@ def check(func, answers, outputs):
         except AssertionError as err:
             errors.append((i, err))
     if len(errors) == 0:
-        print(colorama.Fore.GREEN + f"{func.__name__} success")
+        print(colorama.Fore.GREEN + f"{name} success")
         return
     for itensor, err in errors:
         se = str(err)
@@ -70,16 +76,19 @@ def check(func, answers, outputs):
         if percent < 0.12:
             print(
                 colorama.Fore.YELLOW
-                + f"{func.__name__} tensor({itensor}): mismatch percent = {percent}%"
+                + f"{name} tensor({itensor}): mismatch percent = {percent}%"
             )
         else:
             print(f"{answers[itensor]=}")
             print(f"{outputs[itensor]=}")
-            print(colorama.Fore.RED + f"{func.__name__} tensor({itensor}): {err}")
+            print(colorama.Fore.RED + f"{name} tensor({itensor}): {err}")
 
 
 def run_perf(func, inputs, outputs):
-    return triton.testing.do_bench(lambda: func(*(inputs + outputs)), warmup=50, rep=100) * 1e-3
+    return (
+        triton.testing.do_bench(lambda: func(*(inputs + outputs)), warmup=50, rep=100)
+        * 1e-3
+    )
     # for _ in range(NUM_RUNS):
     #     func(*(inputs + outputs))
     # torch.cuda.synchronize()
@@ -109,19 +118,61 @@ def universal_test(
     latency = run_perf(torchfunc, inputs, outputs)
     print(f"PyTorch: {latency * 1e3:.6f} ms, [{metric(latency=latency):.3f}] TFLOPS")
 
+    retdict = {}
+    retdict["torch"] = metric(latency=latency)
+    retdict["custom"] = []
+
     for func in cutefuncs:
         for d in outputs:
             d.zero_()
         latency = run_perf(func, inputs, outputs)
-        print(
-            f"{func.__name__}: {latency * 1e3:.6f} ms, [{metric(latency=latency):.3f}] TFLOPS"
-        )
+        name = getattr(func, "__name__", "unknown")
+        print(f"{name}: {latency * 1e3:.6f} ms, [{metric(latency=latency):.3f}] TFLOPS")
         check(func, answers, outputs)
+        retdict["custom"].append(metric(latency=latency))
+
+    return retdict
+
+
+def test_gemm_splitk(m: int, n: int, k: int, dtype: str):
+    dtype = STR_DTYPE_MAPPING[dtype]
+    print(f"[TEST] GEMM SPLITK: {m=}, {n=}, {k=}, {dtype=}")
+
+    def torchfunc(a, b, c):
+        torch.matmul(a, b.t(), out=c)
+
+    def compute_flops(m, n, k, latency):
+        return 2 * m * n * k / latency * 1e-12
+
+    funclist = []
+    for i in range(1, 16):
+        funclist.append(partial(acre.cutlass_gemmrc_splitk, split_k_slices=i))
+
+    rets = universal_test(
+        torchfunc,
+        torchfunc,
+        funclist,
+        [(m, k), (n, k)],
+        [(m, n)],
+        dtype,
+        partial(compute_flops, m, n, k),
+    )
+    print("-" * 80)
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(rets["custom"], marker="o", label="custom")
+    plt.plot([rets["torch"]] * len(rets["custom"]), label="torch")
+    plt.xlabel("split_k_slices")
+    plt.ylabel("TFLOPS")
+    plt.title("split_k_slices vs TFLOPS")
+    plt.legend()
+    plt.savefig("splitk.png")
+    plt.close()
 
 
 def test_gemm(m: int, n: int, k: int, dtype: str):
     dtype = STR_DTYPE_MAPPING[dtype]
-    print(f"[TEST] GEMM: {m=}, {n=}, {k=}, {dtype=}")
+    print(f"[TEST] GEMM SPLITK: {m=}, {n=}, {k=}, {dtype=}")
 
     def torchfunc(a, b, c):
         torch.matmul(a, b.t(), out=c)
@@ -136,9 +187,8 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
             acre.cutlass_parallel_gemmrc,
             # acre.cublas_hgemmrc,
             # acre.cublas_gemmexrc,
-            # acre.cutlass_gemmrc_naive,
-            # acre.cutlass_gemmrc_spec,
-            acre.cutlass_gemmrc_splitk,
+            acre.cutlass_gemmrc_naive,
+            acre.cutlass_gemmrc_spec,
         ],
         [(m, k), (n, k)],
         [(m, n)],
@@ -149,10 +199,10 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
 
 
 def main():
-    test_gemm(4096, 4096, 4096, "fp16")
+    # test_gemm(4096, 4096, 4096, "fp16")
     # test_gemm(4096, 4096, 4096, "fp16")
 
-    test_gemm(512, 512, 8192, "fp16")
+    test_gemm_splitk(128, 4096, 4096, "fp16")
 
 
 if __name__ == "__main__":
