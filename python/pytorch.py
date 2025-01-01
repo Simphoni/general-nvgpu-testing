@@ -8,7 +8,7 @@ import triton
 import matplotlib.pyplot as plt
 import numpy as np
 
-import acre
+import beam
 
 plt.rcParams["font.family"] = "DejaVu Sans"
 
@@ -146,7 +146,20 @@ def test_gemm_splitk(m: int, n: int, k: int, dtype: str):
 
     funclist = []
     for i in range(1, 16):
-        funclist.append(partial(acre.cutlass_gemmrc_splitk, split_k_slices=i))
+        # funclist.append(
+        #     partial(
+        #         beam.cutlass_gemmrc_splitk_spec,
+        #         shape_threadblock=[64, 64],
+        #         split_k_slices=i,
+        #     )
+        # )
+        funclist.append(
+            partial(
+                beam.cutlass_gemmrc_splitk_spec,
+                shape_threadblock=[128, 64],
+                split_k_slices=i,
+            )
+        )
 
     rets = universal_test(
         torchfunc,
@@ -172,7 +185,7 @@ def test_gemm_splitk(m: int, n: int, k: int, dtype: str):
 
 def test_gemm(m: int, n: int, k: int, dtype: str):
     dtype = STR_DTYPE_MAPPING[dtype]
-    print(f"[TEST] GEMM SPLITK: {m=}, {n=}, {k=}, {dtype=}")
+    print(f"[TEST] GEMM: {(m,n,k)=}, {dtype=}")
 
     def torchfunc(a, b, c):
         torch.matmul(a, b.t(), out=c)
@@ -184,11 +197,11 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
         torchfunc,
         torchfunc,
         [
-            acre.cutlass_parallel_gemmrc,
-            # acre.cublas_hgemmrc,
-            # acre.cublas_gemmexrc,
-            acre.cutlass_gemmrc_naive,
-            acre.cutlass_gemmrc_spec,
+            beam.cutlass_parallel_gemmrc,
+            beam.cublas_hgemmrc,
+            beam.cublas_gemmexrc,
+            beam.cutlass_gemmrc_naive,
+            beam.cutlass_gemmrc_spec,
         ],
         [(m, k), (n, k)],
         [(m, n)],
@@ -202,7 +215,7 @@ def main():
     # test_gemm(4096, 4096, 4096, "fp16")
     # test_gemm(4096, 4096, 4096, "fp16")
 
-    test_gemm_splitk(128, 4096, 4096, "fp16")
+    test_gemm_splitk(512, 512, 8192, "fp16")
 
 
 if __name__ == "__main__":
@@ -210,5 +223,5 @@ if __name__ == "__main__":
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.autograd.set_grad_enabled(False)
     print(f"Device: {torch.cuda.get_device_name()}")
-    # acre.set_default_nrep(NUM_RUNS)
+    # beam.set_default_nrep(NUM_RUNS)
     main()

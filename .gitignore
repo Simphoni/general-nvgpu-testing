@@ -3,7 +3,12 @@ build/
 __pycache__/
 *.so
 
+out/
+stubs/
+
 *.sqlite
 *.nsys-rep*
 *.ncu-rep*
 *.qdstrm
+
+*.png

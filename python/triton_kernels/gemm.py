@@ -117,14 +117,15 @@ def main():
     providers = ['triton', 'torch']
     
     # Test different matrix shapes
-    for shape_type in ['square']:
+    for shape_type in ['square', 'tall']:
         perf_results = {provider: [] for provider in providers}
         
         for size in sizes:
             if shape_type == 'square':
                 M, N, K = size, size, size
             elif shape_type == 'tall':
-                M, N, K = size * 2, size, size
+                M, N, K = 512, 512, size * 2
+                # M, N, K = size * 2, size, size
             else:  # wide
                 M, N, K = size, size * 2, size
             

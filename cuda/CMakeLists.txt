@@ -57,17 +57,32 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
 
-file(GLOB_RECURSE ACRE_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cu ${CMAKE_CURRENT_SOURCE_DIR}/*.cc)
-add_library(acre SHARED ${ACRE_SOURCES})
-set_target_properties(acre PROPERTIES PREFIX "" SUFFIX ${Python3_EXTENSION_SUFFIX})
-target_include_directories(acre PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_include_directories(acre PUBLIC ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/include ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/tools/util/include)
-target_include_directories(acre PUBLIC ${CMAKE_SOURCE_DIR}/3rdparty/ThunderKittens/include)
-target_compile_definitions(acre PUBLIC INTERFACE_NAME=acre)
-target_link_libraries(acre ${TORCH_LIBRARIES} pybind11::module)
+file(GLOB_RECURSE BEAM_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/*.cu ${CMAKE_CURRENT_SOURCE_DIR}/*.cc)
+add_library(beam_C SHARED ${BEAM_SOURCES})
+set_target_properties(beam_C PROPERTIES PREFIX "" SUFFIX ${Python3_EXTENSION_SUFFIX})
+target_include_directories(beam_C PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(beam_C PUBLIC ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/include ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/tools/util/include)
+target_include_directories(beam_C PUBLIC ${CMAKE_SOURCE_DIR}/3rdparty/ThunderKittens/include)
+target_compile_definitions(beam_C PUBLIC INTERFACE_NAME=beam_C)
+target_link_libraries(beam_C ${TORCH_LIBRARIES} pybind11::module)
 
-set_target_properties(acre PROPERTIES INSTALL_RPATH "\$ORIGIN;${CMAKE_CURRENT_BINARY_DIR}")
+set_target_properties(beam_C PROPERTIES INSTALL_RPATH "\$ORIGIN;${CMAKE_CURRENT_BINARY_DIR}")
 
-set(arce_install_dir "${CMAKE_SOURCE_DIR}/python")
+set(arce_install_dir "${CMAKE_SOURCE_DIR}/python/beam")
 
-install(TARGETS acre LIBRARY DESTINATION ${arce_install_dir} COMPONENT torch_extension)
+install(TARGETS beam_C LIBRARY DESTINATION ${arce_install_dir} COMPONENT torch_ext)
+
+set(generate_stub TRUE)
+set(stub_generator "pybind11-stubgen")
+set(stub_output_dir "${CMAKE_SOURCE_DIR}/python/stubs")
+
+if (generate_stub)
+  add_custom_target(
+    stubgen
+    COMMAND ${CMAKE_COMMAND} -E rm -rf ${stub_output_dir}
+    COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_SOURCE_DIR}/python ${stub_generator} beam -o ${stub_output_dir}
+    COMMAND ${CMAKE_COMMAND} -E copy ${stub_output_dir}/beam/*.pyi ${arce_install_dir}
+    COMMENT "Generating Python stubs with ${stub_generator}"
+  )
+  install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target stubgen)")
+endif()

@@ -104,7 +104,8 @@ void entry_cutlass_gemmrc_splitk(fp16 *A, fp16 *B, fp16 *C, int m, int n, int k,
 }
 
 void entry_cutlass_gemmrc_splitk_spec(fp16 *A, fp16 *B, fp16 *C, int m, int n,
-                                      int k, int _split_k_slices) {
+                                      int k, std::vector<int> shape_threadblock,
+                                      int _split_k_slices) {
   using ElementAccumulator = float;
   using ElementComputeEpilogue = ElementAccumulator;
   using ElementInputA = cutlass::half_t;
@@ -117,29 +118,42 @@ void entry_cutlass_gemmrc_splitk_spec(fp16 *A, fp16 *B, fp16 *C, int m, int n,
   using MMAOp = cutlass::arch::OpClassTensorOp;
   using SmArch = cutlass::arch::Sm80;
 
-  using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<128, 128, 32>;
-  using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 32>;
   using ShapeMMAOp = cutlass::gemm::GemmShape<16, 8, 16>;
-  using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
-      ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value,
 
-      ElementAccumulator, ElementComputeEpilogue>;
+  if (shape_threadblock.size() == 0) {
+    shape_threadblock = {128, 128};
+  }
+  if (shape_threadblock.size() != 2) {
+    return;
+  } else if (shape_threadblock[0] % 32 != 0 || shape_threadblock[1] % 32 != 0) {
+    return;
+  }
 
-  using gemmKernel = cutlass::gemm::device::GemmSplitKParallel<
-      ElementInputA, LayoutInputA, ElementInputB, LayoutInputB, ElementOutput,
-      LayoutOutput, ElementAccumulator, MMAOp, SmArch, ShapeMMAThreadBlock,
-      ShapeMMAWarp, ShapeMMAOp, EpilogueOp>;
-
+  ElementAccumulator alpha = (ElementAccumulator)1.0,
+                     beta = (ElementAccumulator)0.0;
+#define GEMMCALL                                                                   \
+  {                                                                            \
+    gemmKernel gemm_op;                                                        \
+    gemmKernel::Arguments args({m, n, k}, {A, k}, {B, k}, {C, n}, {C, n},      \
+                               {alpha, beta}, split_k_slices);                 \
+    auto workspace_size = gemmKernel::get_workspace_size(args);                \
+    auto workspace = get_the_buffer(workspace_size);                           \
+    if (gemm_op.can_implement(args) != cutlass::Status::kSuccess) {            \
+      return;                                                                  \
+    }                                                                          \
+    cutlassSafeCall(gemm_op(args, workspace));                                 \
+  }
   int split_k_slices = 1;
-  int maxsplit = k / ShapeMMAThreadBlock::kK;
+  int maxsplit = k / 32;
 
-  if (_split_k_slices > 0 && _split_k_slices < split_k_slices) {
+  if (m % shape_threadblock[0] != 0 || n % shape_threadblock[1] != 0) {
+    return;
+  }
+  if (_split_k_slices > 0 && _split_k_slices < maxsplit) {
     split_k_slices = _split_k_slices;
   } else {
-    int occupancy = m / ShapeMMAThreadBlock::kM * n / ShapeMMAThreadBlock::kN;
+    int occupancy = m / shape_threadblock[0] * n / shape_threadblock[1];
     split_k_slices = get_slice_heuristic(maxsplit, occupancy);
-    split_k_slices = std::min(split_k_slices, maxsplit);
-    split_k_slices = std::max(split_k_slices, 1);
     std::string prob_shape = "[" + std::to_string(m) + "," + std::to_string(n) +
                              "," + std::to_string(k) + "]";
     _logger.info(std::string(__PRETTY_FUNCTION__) + ": " + prob_shape +
@@ -147,16 +161,66 @@ void entry_cutlass_gemmrc_splitk_spec(fp16 *A, fp16 *B, fp16 *C, int m, int n,
                  std::to_string(occupancy * split_k_slices) + "), waves(" +
                  std::to_string(occupancy * split_k_slices / kMaxBlock) + ")");
   }
+  split_k_slices = std::min(split_k_slices, maxsplit);
+  split_k_slices = std::max(split_k_slices, 1);
 
-  gemmKernel gemm_op;
-  ElementAccumulator alpha = (ElementAccumulator)1.0,
-                     beta = (ElementAccumulator)0.0;
-  gemmKernel::Arguments args({m, n, k}, {A, k}, {B, k}, {C, n}, {C, n},
-                             {alpha, beta}, split_k_slices);
-  auto workspace_size = gemmKernel::get_workspace_size(args);
-  auto workspace = get_the_buffer(workspace_size);
-  cutlassSafeCall(gemm_op.can_implement(args));
-  cutlassSafeCall(gemm_op(args, workspace));
+  int tm = shape_threadblock[0], tn = shape_threadblock[1];
+  if (tm == 256 && tn == 128) {
+    using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<256, 128, 32>;
+    using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 32>;
+    using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+        ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value,
+        ElementAccumulator, ElementComputeEpilogue>;
+    using gemmKernel = cutlass::gemm::device::GemmSplitKParallel<
+        ElementInputA, LayoutInputA, ElementInputB, LayoutInputB, ElementOutput,
+        LayoutOutput, ElementAccumulator, MMAOp, SmArch, ShapeMMAThreadBlock,
+        ShapeMMAWarp, ShapeMMAOp, EpilogueOp>;
+    GEMMCALL;
+  } else if (tm == 128 && tn == 128) {
+    using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<128, 128, 32>;
+    using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 64, 32>;
+    using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+        ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value,
+        ElementAccumulator, ElementComputeEpilogue>;
+    using gemmKernel = cutlass::gemm::device::GemmSplitKParallel<
+        ElementInputA, LayoutInputA, ElementInputB, LayoutInputB, ElementOutput,
+        LayoutOutput, ElementAccumulator, MMAOp, SmArch, ShapeMMAThreadBlock,
+        ShapeMMAWarp, ShapeMMAOp, EpilogueOp>;
+    GEMMCALL;
+  } else if (tm == 128 && tn == 64) {
+    using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<128, 64, 32>;
+    using ShapeMMAWarp = cutlass::gemm::GemmShape<64, 32, 32>;
+    using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+        ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value,
+        ElementAccumulator, ElementComputeEpilogue>;
+    using gemmKernel = cutlass::gemm::device::GemmSplitKParallel<
+        ElementInputA, LayoutInputA, ElementInputB, LayoutInputB, ElementOutput,
+        LayoutOutput, ElementAccumulator, MMAOp, SmArch, ShapeMMAThreadBlock,
+        ShapeMMAWarp, ShapeMMAOp, EpilogueOp>;
+    GEMMCALL;
+  } else if (tm == 64 && tn == 128) {
+    using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<64, 128, 32>;
+    using ShapeMMAWarp = cutlass::gemm::GemmShape<32, 64, 32>;
+    using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+        ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value,
+        ElementAccumulator, ElementComputeEpilogue>;
+    using gemmKernel = cutlass::gemm::device::GemmSplitKParallel<
+        ElementInputA, LayoutInputA, ElementInputB, LayoutInputB, ElementOutput,
+        LayoutOutput, ElementAccumulator, MMAOp, SmArch, ShapeMMAThreadBlock,
+        ShapeMMAWarp, ShapeMMAOp, EpilogueOp>;
+    GEMMCALL;
+  } else if (tm == 64 && tn == 64) {
+    using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<64, 64, 32>;
+    using ShapeMMAWarp = cutlass::gemm::GemmShape<32, 32, 32>;
+    using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
+        ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value,
+        ElementAccumulator, ElementComputeEpilogue>;
+    using gemmKernel = cutlass::gemm::device::GemmSplitKParallel<
+        ElementInputA, LayoutInputA, ElementInputB, LayoutInputB, ElementOutput,
+        LayoutOutput, ElementAccumulator, MMAOp, SmArch, ShapeMMAThreadBlock,
+        ShapeMMAWarp, ShapeMMAOp, EpilogueOp>;
+    GEMMCALL;
+  }
 }
 
 } // namespace cutlass_kernels
