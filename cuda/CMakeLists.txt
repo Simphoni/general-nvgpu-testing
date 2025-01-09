@@ -73,6 +73,8 @@ set(arce_install_dir "${CMAKE_SOURCE_DIR}/python/beam")
 install(TARGETS beam_C LIBRARY DESTINATION ${arce_install_dir} COMPONENT torch_ext)
 
 set(generate_stub TRUE)
+# NOTE: calling with `python3 -m pybind11_stubgen` will cause different behavior
+# which we wouldn't like
 set(stub_generator "pybind11-stubgen")
 set(stub_output_dir "${CMAKE_SOURCE_DIR}/python/stubs")
 
