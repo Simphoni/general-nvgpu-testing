@@ -123,7 +123,7 @@ void _cutlass_gemmrc_splitk_spec(at::Tensor a, at::Tensor b, at::Tensor c,
 }
 
 void register_cutlass(pybind11::module &mod) {
-  mod.def("cutlass_gemmrc_naive", &_cutlass_gemmrc);
+  mod.def("cutlass_gemmrc", &_cutlass_gemmrc);
 
   mod.def("cutlass_gemmrc_spec", &_cutlass_gemmrc_spec, py::arg("a"),
           py::arg("b"), py::arg("c"),

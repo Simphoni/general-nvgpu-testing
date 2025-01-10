@@ -104,8 +104,10 @@ void entry_cutlass_gemmrc_spec(fp16 *A, fp16 *B, fp16 *C, int m, int n, int k,
 
   GENERATE_GEMM(128, 128, 32, 64, 64, 32);
   GENERATE_GEMM(128, 256, 32, 64, 64, 32);
-  GENERATE_GEMM(256, 128, 32, 64, 64, 32);
 
+  GENERATE_GEMM(256, 128, 32, 64, 64, 32);
+  GENERATE_GEMM(256, 128, 32, 128, 32, 32);
+  GENERATE_GEMM(256, 128, 32, 32, 128, 32);
 } // namespace cutlass_kernels
 
 } // namespace cutlass_kernels

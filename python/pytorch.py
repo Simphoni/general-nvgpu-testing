@@ -15,14 +15,7 @@ plt.rcParams["font.family"] = "DejaVu Sans"
 print(torch.__version__)
 
 
-NUM_RUNS = 64
-
 SLEEP_MILLISEC_BEFORE_EVAL = 100
-
-WITH_NCU = False
-
-if WITH_NCU:
-    NUM_RUNS = 2
 
 STR_DTYPE_MAPPING = {
     "fp32": torch.float32,
@@ -48,9 +41,6 @@ def check(func, answers, outputs):
         assert (
             outputs[i].shape == answers[i].shape
         ), f"{i=}, {outputs[i].shape=}, {answers[i].shape=}"
-
-    if WITH_NCU:
-        return
 
     errors = []
     for i in range(length):
@@ -85,21 +75,8 @@ def check(func, answers, outputs):
 
 
 def run_perf(func, inputs, outputs):
-    return (
-        triton.testing.do_bench(lambda: func(*(inputs + outputs)), warmup=50, rep=100)
-        * 1e-3
-    )
-    # for _ in range(NUM_RUNS):
-    #     func(*(inputs + outputs))
-    # torch.cuda.synchronize()
-    # time.sleep(SLEEP_MILLISEC_BEFORE_EVAL * 1e-3)
-    # tic = time.time()
-    # for _ in range(NUM_RUNS):
-    #     func(*(inputs + outputs))
-    # torch.cuda.synchronize()
-    # toc = time.time()
-    # latency = (toc - tic) / NUM_RUNS
-    # return latency
+    time.sleep(0.05)
+    return triton.testing.do_bench(lambda: func(*(inputs + outputs))) * 1e-3
 
 
 def universal_test(
@@ -157,6 +134,7 @@ def test_gemm_splitk(m: int, n: int, k: int, dtype: str):
             partial(
                 beam.cutlass_gemmrc_splitk_spec,
                 shape_threadblock=[128, 64],
+                shape_warp=[64, 32],
                 split_k_slices=i,
             )
         )
@@ -193,15 +171,22 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
     def compute_flops(m, n, k, latency):
         return 2 * m * n * k / latency * 1e-12
 
+    def spec(a, b, c):
+        beam.cutlass_gemmrc_spec(
+            a, b, c, shape_threadblock=[256, 128], shape_warp=[128, 32]
+        )
+
     universal_test(
         torchfunc,
         torchfunc,
         [
-            beam.cutlass_parallel_gemmrc,
-            beam.cublas_hgemmrc,
-            beam.cublas_gemmexrc,
-            beam.cutlass_gemmrc_naive,
-            beam.cutlass_gemmrc_spec,
+            # beam.cublas_hgemmrc,
+            # beam.cublas_gemmexrc,
+            beam.custom_gemmrc_128x256,
+            beam.cutlass_gemmrc,
+            # spec,
+            # beam.custom_gemmrc_128x128,
+            # beam.cutlass_gemmrc_spec,
         ],
         [(m, k), (n, k)],
         [(m, n)],
@@ -213,9 +198,9 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
 
 def main():
     # test_gemm(4096, 4096, 4096, "fp16")
-    # test_gemm(4096, 4096, 4096, "fp16")
+    test_gemm(4096, 4096, 4096, "fp16")
 
-    test_gemm_splitk(512, 512, 8192, "fp16")
+    # test_gemm_splitk(512, 512, 8192, "fp16")
 
 
 if __name__ == "__main__":
@@ -223,5 +208,4 @@ if __name__ == "__main__":
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.autograd.set_grad_enabled(False)
     print(f"Device: {torch.cuda.get_device_name()}")
-    # beam.set_default_nrep(NUM_RUNS)
     main()

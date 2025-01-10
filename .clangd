@@ -2,8 +2,6 @@ CompileFlags:
   Add:
     - --cuda-path=/home/spack/spack/opt/spack/linux-ubuntu22.04-broadwell/gcc-12.1.0/cuda-12.1.1-k7wgk32miw5juul4rg6evzsklv33whxo
     - -I/home/spack/spack/opt/spack/linux-ubuntu22.04-broadwell/gcc-12.1.0/cuda-12.1.1-k7wgk32miw5juul4rg6evzsklv33whxo/include
-    - -I/home/xjz/venv/nightly/lib/python3.10/site-packages/torch/include
-    - -I/home/xjz/venv/nightly/lib/python3.10/site-packages/torch/include/torch/csrc/api/include
     - -I/usr/include/python3.10
     - -xcuda
     - --cuda-gpu-arch=sm_80
@@ -21,4 +19,7 @@ CompileFlags:
     - --diag_suppress=cc_clobber_ignored,--diag_suppress=field_without_dll_interface,--diag_suppress=base_class_has_different_dll_interface,--diag_suppress=dll_interface_conflict_none_assumed,--diag_suppress=dll_interface_conflict_dllexport_assumed,--diag_suppress=bad_friend_decl
     - --generate-code=arch=compute_80,code=[compute_80,sm_80]
     - --use_fast_math
+    - -isystem=/home/xjz/venv/nightly/lib/python3.10/site-packages/torch/include
+    - -isystem=/home/xjz/venv/nightly/lib/python3.10/site-packages/torch/include/torch/csrc/api/include
+    
   Compiler: clang++
