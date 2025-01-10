@@ -2,9 +2,10 @@ import torch
 import time
 import colorama
 import argparse
+from subprocess import check_output
 from functools import partial
-import triton
 
+import triton
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -202,10 +203,20 @@ def main():
 
     # test_gemm_splitk(512, 512, 8192, "fp16")
 
+def print_device_info():
+    output = check_output(["nvidia-smi", "--query-gpu=name,pci.bus_id,driver_version", "--format=csv", "-i", "0"], text=True)
+    lines = output.split('\n')
+    data = list(map(str.strip, lines[1].split(',')))
+    print("-" * 80)
+    print("Device Info")
+    print(f"  name:   {data[0]}")
+    print(f"  bus_id: {data[1]}")
+    print(f"  driver: {data[2]}")
+    print("-" * 80)
 
 if __name__ == "__main__":
     torch.cuda.set_device(0)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.autograd.set_grad_enabled(False)
-    print(f"Device: {torch.cuda.get_device_name()}")
+    print_device_info()
     main()
