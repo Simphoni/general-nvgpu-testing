@@ -68,7 +68,7 @@ target_link_libraries(beam_C ${TORCH_LIBRARIES} pybind11::module)
 
 set_target_properties(beam_C PROPERTIES INSTALL_RPATH "\$ORIGIN;${CMAKE_CURRENT_BINARY_DIR}")
 
-set(arce_install_dir "${CMAKE_SOURCE_DIR}/python/beam")
+set(arce_install_dir "${CMAKE_SOURCE_DIR}/python/beam/_C")
 
 install(TARGETS beam_C LIBRARY DESTINATION ${arce_install_dir} COMPONENT torch_ext)
 
@@ -83,7 +83,7 @@ if (generate_stub)
     stubgen
     COMMAND ${CMAKE_COMMAND} -E rm -rf ${stub_output_dir}
     COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${CMAKE_SOURCE_DIR}/python ${stub_generator} beam -o ${stub_output_dir}
-    COMMAND ${CMAKE_COMMAND} -E copy ${stub_output_dir}/beam/*.pyi ${arce_install_dir}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${stub_output_dir}/beam ${CMAKE_SOURCE_DIR}/python/beam
     COMMENT "Generating Python stubs with ${stub_generator}"
   )
   install(CODE "execute_process(COMMAND ${CMAKE_COMMAND} --build . --target stubgen)")

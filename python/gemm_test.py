@@ -16,8 +16,6 @@ plt.rcParams["font.family"] = "DejaVu Sans"
 print(torch.__version__)
 
 
-SLEEP_MILLISEC_BEFORE_EVAL = 100
-
 STR_DTYPE_MAPPING = {
     "fp32": torch.float32,
     "tf32": torch.float32,
@@ -26,7 +24,6 @@ STR_DTYPE_MAPPING = {
     "int8": torch.int8,
     # "int4": torch.int4,
 }
-
 
 colorama.init(autoreset=True)
 
@@ -207,11 +204,14 @@ def print_device_info():
     output = check_output(["nvidia-smi", "--query-gpu=name,pci.bus_id,driver_version", "--format=csv", "-i", "0"], text=True)
     lines = output.split('\n')
     data = list(map(str.strip, lines[1].split(',')))
+    defaults = ["NVIDIA A100-PCIE-40GB", "00000000:04:00.0", "535.113.01"]
     print("-" * 80)
     print("Device Info")
     print(f"  name:   {data[0]}")
     print(f"  bus_id: {data[1]}")
     print(f"  driver: {data[2]}")
+    if data != defaults:
+        print(colorama.Fore.RED + "  [WARNING]: Device does not match Lotus defaults")
     print("-" * 80)
 
 if __name__ == "__main__":
