@@ -1,7 +1,6 @@
 import triton
 import triton.language as tl
 import torch
-import matplotlib.pyplot as plt
 import numpy as np
 from typing import Optional
 
@@ -113,6 +112,7 @@ def benchmark_matmul(M, N, K, provider):
 
 def main():
     """Main function to run benchmarks and create visualizations."""
+    import matplotlib.pyplot as plt
     sizes = [128, 256, 512, 1024, 2048, 4096]
     providers = ['triton', 'torch']
     

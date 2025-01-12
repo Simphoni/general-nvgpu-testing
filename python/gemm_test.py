@@ -13,8 +13,6 @@ import beam
 
 plt.rcParams["font.family"] = "DejaVu Sans"
 
-print(torch.__version__)
-
 
 STR_DTYPE_MAPPING = {
     "fp32": torch.float32,
@@ -74,7 +72,7 @@ def check(func, answers, outputs):
 
 def run_perf(func, inputs, outputs):
     time.sleep(0.05)
-    return triton.testing.do_bench(lambda: func(*(inputs + outputs))) * 1e-3
+    return triton.testing.do_bench(lambda: func(*(inputs + outputs)), warmup=100, rep=100) * 1e-3
 
 
 def universal_test(
@@ -148,14 +146,14 @@ def test_gemm_splitk(m: int, n: int, k: int, dtype: str):
     )
     print("-" * 80)
 
-    plt.figure(figsize=(10, 6))
-    plt.plot(rets["custom"], marker="o", label="custom")
-    plt.plot([rets["torch"]] * len(rets["custom"]), label="torch")
+    plt.figure(figsize=(6, 4))
+    plt.plot(rets["custom"], marker="o", label="cutlass")
+    plt.plot([rets["torch"]] * len(rets["custom"]), label="PyTorch")
     plt.xlabel("split_k_slices")
     plt.ylabel("TFLOPS")
-    plt.title("split_k_slices vs TFLOPS")
+    plt.title(f"Split-K GEMM: {m=}, {n=}, {k=}")
     plt.legend()
-    plt.savefig("splitk.png")
+    plt.savefig("splitk.pdf")
     plt.close()
 
 
@@ -183,7 +181,7 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
             beam.custom_gemmrc_128x256,
             beam.cutlass_gemmrc,
             # spec,
-            # beam.custom_gemmrc_128x128,
+            beam.custom_gemmrc_128x128,
             # beam.cutlass_gemmrc_spec,
         ],
         [(m, k), (n, k)],
@@ -195,26 +193,46 @@ def test_gemm(m: int, n: int, k: int, dtype: str):
 
 
 def main():
-    # test_gemm(4096, 4096, 4096, "fp16")
     test_gemm(4096, 4096, 4096, "fp16")
+    test_gemm(4096, 4096, 4096, "fp16")
+    # test_gemm(8192, 8192, 4096, "fp16")
 
-    # test_gemm_splitk(512, 512, 8192, "fp16")
+def test_splitk():
+    test_gemm_splitk(512, 512, 8192, "fp16")
+
+def test_tuner():
+    test_gemm(2048, 2048, 4096, "fp16")
+    tuner = beam.OperatorTuner()
+    ret = tuner.tune((2048, 2048, 4096))
+    print(str(ret[0]), ret[1])
+
+    test_gemm(4096, 4096, 4096, "fp16")
+    tuner = beam.OperatorTuner()
+    ret = tuner.tune((4096, 4096, 4096))
+    print(str(ret[0]), ret[1])
+
+    test_gemm(8192, 8192, 4096, "fp16")
+    tuner = beam.OperatorTuner()
+    ret = tuner.tune((8192, 8192, 4096))
+    print(str(ret[0]), ret[1])
+    
+
 
 def print_device_info():
     output = check_output(["nvidia-smi", "--query-gpu=name,pci.bus_id,driver_version", "--format=csv", "-i", "0"], text=True)
     lines = output.split('\n')
     data = list(map(str.strip, lines[1].split(',')))
     defaults = ["NVIDIA A100-PCIE-40GB", "00000000:04:00.0", "535.113.01"]
-    print("-" * 80)
-    print("Device Info")
-    print(f"  name:   {data[0]}")
-    print(f"  bus_id: {data[1]}")
-    print(f"  driver: {data[2]}")
+    print("-" * 14 + " Device Info " + "-" * 13)
+    print(f"name:   {data[0]}")
+    print(f"bus_id: {data[1]}")
+    print(f"driver: {data[2]}")
     if data != defaults:
-        print(colorama.Fore.RED + "  [WARNING]: Device does not match Lotus defaults")
-    print("-" * 80)
+        print(colorama.Fore.RED + "  [WARNING]: Device does not match Lotus-A100 defaults")
+    print("-" * 40)
 
 if __name__ == "__main__":
+    print(torch.__version__)
     torch.cuda.set_device(0)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.autograd.set_grad_enabled(False)

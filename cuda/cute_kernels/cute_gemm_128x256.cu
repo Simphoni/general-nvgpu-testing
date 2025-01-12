@@ -21,7 +21,7 @@ static __global__ void __launch_bounds__(256)
   using gemmTileM = C<algoTileM>;
   using gemmTileN = C<algoTileN>;
   using gemmTileK = _32;
-  using gemmPipe = _6;
+  using gemmPipe = _4;
   const int thridx = threadIdx.x + threadIdx.y * blockDim.x;
   int ctaIdx = blockIdx.x + blockIdx.y * gridDim.x;
   // mtile for 'Microtile'.

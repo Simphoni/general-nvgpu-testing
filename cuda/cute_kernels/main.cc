@@ -75,8 +75,19 @@ void _cutlass_parallel_gemmrc_lnr(torch::Tensor gemmA, torch::Tensor gemmB,
       lnM, lnN);
 }
 
+void _print_mma() {
+  using namespace cute;
+  auto blockMMA = make_tiled_mma(
+      MMA_Atom<MMA_Traits<SM80_16x8x8_F32F16F16F32_TN>>{},
+      make_layout(Shape<_1, _1>{}, LayoutRight{}), Tile<_16, _8, _8>{});
+  print_latex(blockMMA);
+}
+
 void register_cute_kernels(pybind11::module &mod) {
   mod.def("cutlass_parallel_gemmrc_lnr", &_cutlass_parallel_gemmrc_lnr);
-  mod.def("custom_gemmrc_128x128", &_custom_gemmrc_128x128);
-  mod.def("custom_gemmrc_128x256", &_custom_gemmrc_128x256);
+  mod.def("custom_gemmrc_128x128", &_custom_gemmrc_128x128, py::arg("a"),
+          py::arg("b"), py::arg("c"));
+  mod.def("custom_gemmrc_128x256", &_custom_gemmrc_128x256, py::arg("a"),
+          py::arg("b"), py::arg("c"));
+  mod.def("print_mma", &_print_mma);
 }

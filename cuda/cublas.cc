@@ -122,6 +122,8 @@ void _cublas_gemmex_rc_compf32(at::Tensor a, at::Tensor b, at::Tensor c) {
 }
 
 void register_cublas(pybind11::module &mod) {
-  mod.def("cublas_hgemmrc", &_cublas_hgemm_rc);
-  mod.def("cublas_gemmexrc", &_cublas_gemmex_rc_compf32);
+  mod.def("cublas_hgemmrc", &_cublas_hgemm_rc, py::arg("a"), py::arg("b"),
+          py::arg("c"));
+  mod.def("cublas_gemmexrc", &_cublas_gemmex_rc_compf32, py::arg("a"),
+          py::arg("b"), py::arg("c"));
 }
