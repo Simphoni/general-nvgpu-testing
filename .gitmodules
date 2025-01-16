@@ -1,3 +1,4 @@
 [submodule "3rdparty/cutlass"]
 	path = 3rdparty/cutlass
-	url = https://github.com/NVIDIA/cutlass
+	url = https://xingjz20@dev.azure.com/xingjz20/Mirrors/_git/cutlass
+	#url = https://github.com/NVIDIA/cutlass
